@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { collection, getDocs, query, orderBy, where, updateDoc, doc, onSnapshot, writeBatch, serverTimestamp } from 'firebase/firestore';
 import { db, auth } from '../../firebase';
+import { getCurrentStudentRollNumber } from '../../utils/studentIdentity';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import { Bell, Briefcase, CheckCircle, AlertCircle, Calendar, FileText, MessageSquare } from 'lucide-react';
@@ -45,12 +46,23 @@ const Notifications = () => {
 
     // Set up real-time listener for notifications
     const setupNotificationsListener = () => {
-      // Query for user-specific notifications
-      const userNotificationsQuery = query(
-        collection(db, 'notifications'),
-        where('recipientId', '==', userId),
-        orderBy('timestamp', 'desc')
-      );
+      // Query for user-specific notifications (by rollNumber primary, uid fallback)
+      const setupUserQuery = async () => {
+        const roll = await getCurrentStudentRollNumber();
+        if (roll) {
+          return query(
+            collection(db, 'notifications'),
+            where('recipientRoll', '==', roll),
+            orderBy('timestamp', 'desc')
+          );
+        }
+        console.warn('Notifications: rollNumber missing, listening by uid');
+        return query(
+          collection(db, 'notifications'),
+          where('recipientId', '==', userId),
+          orderBy('timestamp', 'desc')
+        );
+      };
 
       // Query for general student notifications
       const generalNotificationsQuery = query(
@@ -61,9 +73,13 @@ const Notifications = () => {
       );
 
       // Set up listeners
-      const userUnsubscribe = onSnapshot(userNotificationsQuery, (snapshot) => {
-        handleNotificationsUpdate(snapshot, 'user');
-      });
+      let userUnsubscribe = () => {};
+      (async () => {
+        const qUser = await setupUserQuery();
+        userUnsubscribe = onSnapshot(qUser, (snapshot) => {
+          handleNotificationsUpdate(snapshot, 'user');
+        });
+      })();
 
       const generalUnsubscribe = onSnapshot(generalNotificationsQuery, (snapshot) => {
         handleNotificationsUpdate(snapshot, 'general');
@@ -209,9 +225,11 @@ const Notifications = () => {
   };
 
   if (loading) {
-    return         <div className="fixed top-0 left-[20%] right-0 bottom-0 bg-gray-200 bg-opacity-10 flex items-center justify-center z-50">
-    <Loader />
-    </div>;
+    return (
+      <div className="fixed inset-0 bg-gray-200 bg-opacity-10 flex items-center justify-center z-50">
+        <Loader />
+      </div>
+    );
   }
 
   return (

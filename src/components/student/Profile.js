@@ -179,7 +179,7 @@ const Profile = () => {
   }
 
   return (
-    <div className="container mx-auto px-0 sm:px-4 py-6 max-w-6xl">
+    <div className="container mx-auto px-3 sm:px-4 py-6 max-w-6xl">
       <ToastContainer position="top-right" autoClose={3000} />
       
       {/* Profile Header with Completion Percentage */}
@@ -222,7 +222,7 @@ const Profile = () => {
       
       {/* Profile Navigation */}
       <div className="">
-        <nav className="flex space-x-1 bg-gray-100 p-1 rounded-t-lg">
+        <nav className="flex gap-1 bg-gray-100 p-1 rounded-t-lg overflow-x-auto">
           <button
             onClick={() => setActiveTab("basic")}
             className={`flex items-center px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { collection, query, where, getDocs, doc, getDoc, updateDoc, writeBatch, serverTimestamp, deleteDoc, addDoc } from 'firebase/firestore';
 import { db, auth } from '../../firebase';
+import { getCurrentStudentRollNumber } from '../../utils/studentIdentity';
 import { ToastContainer, toast } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import { createStatusUpdateNotification, createNotification, createSystemAlertNotification } from '../../utils/notificationHelpers';
@@ -63,8 +64,12 @@ const Applications = () => {
       setIsPlaced(studentData?.offerDecision === 'Accepted');
 
       const applicationsRef = collection(db, 'applications');
-      const q = query(applicationsRef, where('student_id', '==', user.uid));
-      const querySnapshot = await getDocs(q);
+      const roll = await getCurrentStudentRollNumber();
+      const q1 = roll
+        ? query(applicationsRef, where('student_rollNumber', '==', roll))
+        : query(applicationsRef, where('student_id', '==', user.uid));
+      if (!roll) console.warn('Applications list: rollNumber missing, using uid fallback');
+      const querySnapshot = await getDocs(q1);
       
       const applicationsData = [];
       for (const docSnapshot of querySnapshot.docs) {
@@ -470,7 +475,7 @@ const Applications = () => {
     });
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="px-3 sm:px-6 py-6 space-y-6">
       <ToastContainer />
       
       {/* Placement Banner */}
@@ -481,7 +486,7 @@ const Applications = () => {
       )}
 
       {/* Filters */}
-      <div className="flex gap-4 mb-6">
+      <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 mb-6">
         <select 
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
@@ -507,7 +512,7 @@ const Applications = () => {
       </div>
 
       {/* Applications Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
         {filteredApplications.map(application => (
           <div 
             key={application.id} 
@@ -599,7 +604,7 @@ const Applications = () => {
             </div>
 
             {/* Application Details */}
-            <div className="grid grid-cols-2 gap-4 mb-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
               <div>
                 <p className="text-sm text-gray-600">Applied on</p>
                 <p className="font-medium">
@@ -673,7 +678,7 @@ const Applications = () => {
         )}
 
         {loading && (
-          <div className="fixed top-0 left-[20%] right-0 bottom-0 bg-gray-200 bg-opacity-10 flex items-center justify-center z-50">
+          <div className="fixed inset-0 bg-gray-200 bg-opacity-10 flex items-center justify-center z-50">
             <Loader />
           </div>
         )}

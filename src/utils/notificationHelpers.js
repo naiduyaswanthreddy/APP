@@ -1,12 +1,22 @@
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
-import { sendEmailNotification, getStudentEmail } from './emailHelpers';
+import { sendEmailNotification, getStudentEmail, getStudentEmailByRoll } from './emailHelpers';
+import { getRollNumberByUid, isValidRollNumber } from './studentIdentity';
 
 // Enhanced createNotification function with email support
 export const createNotification = async (notificationData, sendEmail = false) => {
   try {
+    // Resolve recipient roll for storage if possible
+    let resolvedRecipientRoll = notificationData.recipientRoll || null;
+    if (!resolvedRecipientRoll && notificationData.recipientId) {
+      try {
+        const byUid = await getRollNumberByUid(notificationData.recipientId);
+        if (byUid) resolvedRecipientRoll = byUid;
+      } catch (_e) {}
+    }
     const notification = {
       ...notificationData,
+      recipientRoll: resolvedRecipientRoll || notificationData.recipientRoll || null,
       isRead: false,
       timestamp: serverTimestamp(),
     };
@@ -14,9 +24,15 @@ export const createNotification = async (notificationData, sendEmail = false) =>
     const docRef = await addDoc(collection(db, 'notifications'), notification);
 
     // Send email notification if requested and recipient is specified
-    if (sendEmail && notificationData.recipientId) {
+    if (sendEmail && (notificationData.recipientRoll || notificationData.recipientId)) {
       try {
-        const studentEmail = await getStudentEmail(notificationData.recipientId);
+        let studentEmail = null;
+        if (notificationData.recipientRoll && isValidRollNumber(notificationData.recipientRoll)) {
+          studentEmail = await getStudentEmailByRoll(notificationData.recipientRoll);
+        }
+        if (!studentEmail && notificationData.recipientId) {
+          studentEmail = await getStudentEmail(notificationData.recipientId);
+        }
         if (studentEmail) {
           // Map notification type to email type
           const emailTypeMap = {
@@ -56,7 +72,8 @@ export const sendSelectionNotification = async (studentId, jobId, jobPosition, c
     title: 'Congratulations! You have been selected!',
     message: `You have been selected for ${jobPosition} at ${companyName}. Please accept or reject your offer.`,
     type: 'job_selection',
-    recipientId: studentId,
+    recipientId: isValidRollNumber(studentId) ? null : studentId,
+    recipientRoll: isValidRollNumber(studentId) ? studentId : (await getRollNumberByUid(studentId)) || null,
     isGeneral: false,
     recipientType: 'student',
     actionLink: `/student/applications`,
@@ -108,7 +125,8 @@ export const createJobPostingNotification = async (studentId, jobData, sendEmail
     title: `New Job Posting: ${jobData.position} at ${jobData.company}`,
     message: `A new job opportunity matching your skills is available. Salary: ${jobData.salary || 'Not specified'}`,
     type: 'job_posting',
-    recipientId: studentId,
+    recipientId: isValidRollNumber(studentId) ? null : studentId,
+    recipientRoll: isValidRollNumber(studentId) ? studentId : (await getRollNumberByUid(studentId)) || null,
     isGeneral: false,
     recipientType: 'student',
     actionLink: `/student/jobpost`,
@@ -130,7 +148,8 @@ export const createStatusUpdateNotification = async (studentId, applicationData,
     title: `Application Status Update: ${applicationData.job?.position || 'Unknown Position'}`,
     message: statusMessages[applicationData.status] || 'Your application status has been updated.',
     type: 'status_update',
-    recipientId: studentId,
+    recipientId: isValidRollNumber(studentId) ? null : studentId,
+    recipientRoll: isValidRollNumber(studentId) ? studentId : (await getRollNumberByUid(studentId)) || null,
     isGeneral: false,
     recipientType: 'student',
     actionLink: `/student/applications`,

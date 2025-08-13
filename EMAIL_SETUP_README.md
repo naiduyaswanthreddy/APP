@@ -261,3 +261,4 @@ Use test email addresses:
 The email notification system provides a robust, scalable solution for keeping users informed about important events in the placement portal. With proper setup and monitoring, it will significantly improve user engagement and communication efficiency.
 
 For additional support or questions, refer to the Firebase documentation and your chosen email provider's support resources.
+

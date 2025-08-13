@@ -760,7 +760,7 @@ const ProfileCareer = () => {
   };
 
   return (
-    <div className="max-w-7xl mx-auto">
+    <div className="max-w-7xl mx-auto px-3 sm:px-4">
       <ToastContainer position="top-right" autoClose={3000} />
       
    
@@ -768,7 +768,7 @@ const ProfileCareer = () => {
       <h2 className="text-2xl font-bold mb-6">Career Profile</h2>
       
       {/* Tab Navigation */}
-      <div className="mb-6 flex flex-wrap gap-2 border-b">
+      <div className="mb-6 flex gap-2 border-b overflow-x-auto">
         {profileTabs.map((tab) => (
           <button
             key={tab.id}

@@ -42,7 +42,7 @@ const MyDiscussions = () => {
   }
 
   return (
-    <div className="max-w-5xl mx-auto p-4">
+    <div className="max-w-5xl mx-auto px-3 sm:px-4 py-4">
       <h2 className="text-2xl font-semibold mb-4">My Discussions</h2>
       {discussions.length === 0 ? (
         <div className="text-gray-600">You haven't joined any discussions yet. Open a job and choose Discussion to join.</div>
@@ -52,8 +52,8 @@ const MyDiscussions = () => {
             <div key={job.id} className="bg-white rounded-lg shadow p-4 border">
               <div className="flex items-center justify-between">
                 <div>
-                  <div className="text-lg font-medium">{job.position}</div>
-                  <div className="text-sm text-gray-600">{job.company}</div>
+                  <div className="text-lg font-medium break-words">{job.position}</div>
+                  <div className="text-sm text-gray-600 break-words">{job.company}</div>
                 </div>
                 <button
                   onClick={() => setActiveJob(job)}
@@ -75,5 +75,6 @@ const MyDiscussions = () => {
 };
 
 export default MyDiscussions;
+
 
 

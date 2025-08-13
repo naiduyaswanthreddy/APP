@@ -121,18 +121,18 @@ const Resources = () => {
   };
 
   return (
-    <div className="p-6 space-y-6 bg-gray-50 min-h-screen">
+    <div className="px-3 sm:px-6 py-6 space-y-6 bg-gray-50 min-h-screen">
       <ToastContainer /> {/* Add ToastContainer to render toasts */}
       {/* Header with Search and Bookmarked Button */}
-      <div className="flex justify-between items-center">
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
         <h2 className="text-2xl font-semibold">Learning Resources</h2>
-        <div className="flex gap-4">
+        <div className="flex gap-3 sm:gap-4 w-full sm:w-auto">
           <input
             type="text"
             placeholder="Search for anything..."
             value={searchQuery}
             onChange={handleSearch}
-            className="border p-2 rounded-md shadow-sm w-80 outline-none"
+            className="border p-2 rounded-md shadow-sm w-full sm:w-80 outline-none"
           />
           <button
             onClick={() => setShowBookmarked(!showBookmarked)}
@@ -194,7 +194,7 @@ const Resources = () => {
             ).map((resource) => (
               <div
                 key={resource.id}
-                className="p-6 bg-white rounded-lg shadow-md flex justify-between items-center"
+                className="p-6 bg-white rounded-lg shadow-md flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3"
               >
                 <div>
                   <h3 className="font-semibold text-lg">{resource.title}</h3>

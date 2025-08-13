@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { collection, getDocs, query, orderBy, addDoc, doc, getDoc, where, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { db, auth } from '../../firebase';
+import { getCurrentStudentRollNumber } from '../../utils/studentIdentity';
 import { ToastContainer, toast } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import { createJobPostingNotification } from '../../utils/notificationHelpers';
@@ -59,7 +60,7 @@ const JobPost = () => {
       setShowChatPanel(true);
       
       // Create a notification for admins
-      await createJobPostingNotification(auth.currentUser.uid, selectedJob);
+      await createJobPostingNotification((await getCurrentStudentRollNumber()) || auth.currentUser.uid, selectedJob);
       
       toast.success("You've joined the discussion!");
     } catch (error) {
@@ -212,8 +213,11 @@ const JobPost = () => {
       const user = auth.currentUser;
       if (user) {
         const savedJobsRef = collection(db, 'saved_jobs');
-        const q = query(savedJobsRef, where('student_id', '==', user.uid));
-        const querySnapshot = await getDocs(q);
+        const roll = await getCurrentStudentRollNumber();
+        const q1 = roll
+          ? query(savedJobsRef, where('student_rollNumber', '==', roll))
+          : query(savedJobsRef, where('student_id', '==', user.uid));
+        const querySnapshot = await getDocs(q1);
         setSavedJobs(querySnapshot.docs.map(doc => doc.data().job_id));
       }
     } catch (error) {
@@ -226,8 +230,11 @@ const JobPost = () => {
       const user = auth.currentUser;
       if (user) {
         const applicationsRef = collection(db, 'applications');
-        const q = query(applicationsRef, where('student_id', '==', user.uid));
-        const querySnapshot = await getDocs(q);
+        const roll = await getCurrentStudentRollNumber();
+        const q1 = roll 
+          ? query(applicationsRef, where('student_rollNumber', '==', roll))
+          : query(applicationsRef, where('student_id', '==', user.uid));
+        const querySnapshot = await getDocs(q1);
         
         // Store job IDs, statuses, and screening answers
         const jobIds = [];
@@ -254,9 +261,11 @@ const JobPost = () => {
     try {
       const user = auth.currentUser;
       if (user) {
+        const roll = await getCurrentStudentRollNumber();
         await addDoc(collection(db, 'saved_jobs'), {
           job_id: jobId,
           student_id: user.uid,
+          student_rollNumber: roll || null,
           saved_at: serverTimestamp()
         });
         setSavedJobs([...savedJobs, jobId]);
@@ -280,6 +289,7 @@ const JobPost = () => {
     try {
       const user = auth.currentUser;
       if (user) {
+        const roll = await getCurrentStudentRollNumber();
         // Check if screening questions have been answered
         if (selectedJob?.screeningQuestions?.length > 0) {
           const unansweredQuestions = selectedJob.screeningQuestions.filter(
@@ -299,6 +309,7 @@ const JobPost = () => {
         await addDoc(collection(db, 'applications'), {
           job_id: jobId,
           student_id: user.uid,
+          student_rollNumber: roll || null,
           status: 'pending',
           applied_at: serverTimestamp(),
           screening_answers: screeningAnswers // This will store the answers map
@@ -671,7 +682,7 @@ const JobPost = () => {
         </>
       ) : (
         // Full page job details view
-        <div className="container mx-auto px-0 py-6">
+        <div className="container mx-auto px-3 sm:px-0 py-6">
             <button
               onClick={() => setSelectedJob(null)}
               className="mb-6 flex items-center text-gray-600 hover:text-gray-800"

@@ -924,7 +924,7 @@ const JobApplications = () => {
       const application = applications.find(app => app.id === applicationId);
       if (!application) return;
 
-      const applicationRef = doc(db, "applications", applicationId);
+        const applicationRef = doc(db, "applications", applicationId);
       await updateDoc(applicationRef, {
         interviewDateTime: interviewDateTime,
         status: 'interview_scheduled',

@@ -1,4 +1,4 @@
-import { collection, addDoc, serverTimestamp, doc, getDoc } from 'firebase/firestore';
+import { collection, addDoc, serverTimestamp, doc, getDoc, query, where, getDocs } from 'firebase/firestore';
 import { db } from '../firebase';
 
 // Email templates for different notification types
@@ -484,5 +484,20 @@ export const getStudentEmails = async (studentIds) => {
   } catch (error) {
     console.error('Error getting student emails:', error);
     return [];
+  }
+};
+
+// New: Get email by roll number
+export const getStudentEmailByRoll = async (rollNumber) => {
+  try {
+    const q = query(collection(db, 'students'), where('rollNumber', '==', rollNumber));
+    const snap = await getDocs(q);
+    if (!snap.empty) {
+      return snap.docs[0].data()?.email || null;
+    }
+    return null;
+  } catch (error) {
+    console.error('Error getting student email by rollNumber:', error);
+    return null;
   }
 };

@@ -299,7 +299,8 @@ const EnhancedSelectionWorkflow = ({ application, job, onStatusUpdate }) => {
     try {
       // Import the notification helper function
       const { sendSelectionNotification: sendNotification } = await import('../../../utils/notificationHelpers');
-      await sendNotification(application.student_id, job.id, job.position, job.company);
+      const recipient = (application.student && application.student.rollNumber) ? application.student.rollNumber : application.student_id;
+      await sendNotification(recipient, job.id, job.position, job.company);
     } catch (error) {
       // Fallback to direct notification creation
       const notificationRef = collection(db, "notifications");

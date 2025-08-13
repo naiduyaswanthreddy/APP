@@ -6,8 +6,9 @@ import { Routes, Route, useNavigate, Navigate } from 'react-router-dom';
 import AdminAnalytics from "./components/admin/Analytics";
 
 // Then Firebase imports
-import { auth } from "./firebase";
+import { auth, db } from "./firebase";
 import { onAuthStateChanged, getIdTokenResult } from 'firebase/auth';
+import { doc, getDoc } from 'firebase/firestore';
 
 // Then page components
 import Login from "./Login";
@@ -71,6 +72,18 @@ function AuthHandler() {
         try {
           const token = await getIdTokenResult(user, true);
           const claimRole = token.claims.role || token.claims.userRole || localStorage.getItem('userRole');
+          // Fetch and cache rollNumber for students
+          try {
+            const snap = await getDoc(doc(db, 'students', user.uid));
+            if (snap.exists()) {
+              const roll = snap.data()?.rollNumber;
+              if (roll) {
+                localStorage.setItem('rollNumber', roll);
+              }
+            }
+          } catch (_e) {
+            // ignore
+          }
           if (claimRole) {
             setUser(user);
             setRole(claimRole);

@@ -262,7 +262,7 @@ const StudentCalendar = () => {
   };
 
   return (
-    <div className="container mx-auto px-4 py-8">
+    <div className="container mx-auto px-3 sm:px-4 py-6">
       <ToastContainer />
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-2xl font-bold text-gray-800">Placement Calendar</h1>
@@ -401,7 +401,7 @@ const StudentCalendar = () => {
             <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
           </div>
         ) : (
-          <div className="h-[600px]">
+          <div className="h-[60vh] sm:h-[600px]">
             <Calendar
               localizer={localizer}
               events={filteredEvents}

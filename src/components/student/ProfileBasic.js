@@ -101,7 +101,7 @@ const ProfileBasic = ({ userData: propUserData, isAdminView, onUserDataChange })
           name: user.displayName || "User",
           email: user.email,
           mobile: localStorage.getItem("mobile") || "",
-          rollNumber: localStorage.getItem("rollNumber") || "",
+          rollNumber: localStorage.getItem("rollNumber") || data.rollNumber || "",
           batch: localStorage.getItem("batch") || "",
           program: localStorage.getItem("program") || "",
           department: data.department || "",

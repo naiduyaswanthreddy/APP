@@ -65,7 +65,10 @@ const Students = () => {
     try {
       // Fetch all applications for this student
       const applicationsRef = collection(db, "applications");
-      const q = query(applicationsRef, where("student_id", "==", student.id));
+      // Prefer rollNumber if available
+      const q = student.rollNumber
+        ? query(applicationsRef, where("student_rollNumber", "==", student.rollNumber))
+        : query(applicationsRef, where("student_id", "==", student.id));
       const querySnapshot = await getDocs(q);
       
       const studentApplications = [];

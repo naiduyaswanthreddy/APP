@@ -222,3 +222,4 @@ const PushNotificationSettings = () => {
 };
 
 export default PushNotificationSettings;
+

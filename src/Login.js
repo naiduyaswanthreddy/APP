@@ -2,9 +2,10 @@ import React, { useState, useEffect } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { auth } from "./firebase";
-import { doc, getDoc } from "firebase/firestore";
+import { doc, getDoc, query, where, collection, getDocs } from "firebase/firestore";
 import { db } from "./firebase";
 import { User, Building2 } from "lucide-react";
+import { isValidRollNumber } from './utils/studentIdentity';
 
 const Login = () => {
   const [email, setEmail] = useState("");
@@ -54,11 +55,32 @@ const Login = () => {
           setLoading(false);
         }
       } else if (selectedRole === "student") {
-        // Check if user exists in students collection
+        // Check if user exists in students collection (by uid or rollNumber fallback)
         const studentDoc = await getDoc(doc(db, 'students', user.uid));
-        
-        if (studentDoc.exists()) {
-          // User is a student, set role and navigate
+        let exists = studentDoc.exists();
+        if (!exists) {
+          // Legacy path: try by email to find a student document to map
+          try {
+            const q = query(collection(db, 'students'), where('email', '==', user.email));
+            const snap = await getDocs(q);
+            exists = !snap.empty;
+            if (exists) {
+              const roll = snap.docs[0].data()?.rollNumber;
+              if (roll && isValidRollNumber(roll)) {
+                localStorage.setItem('rollNumber', roll);
+              }
+            }
+          } catch (_e) {}
+        } else {
+          const roll = studentDoc.data()?.rollNumber;
+          if (roll && isValidRollNumber(roll)) {
+            localStorage.setItem('rollNumber', roll);
+          } else {
+            console.warn('Login: student has no rollNumber set. Please update profile.');
+          }
+        }
+
+        if (exists) {
           localStorage.setItem("userRole", "student");
           navigate("/student", { replace: true });
         } else {

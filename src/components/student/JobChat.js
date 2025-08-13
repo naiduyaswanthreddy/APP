@@ -240,7 +240,7 @@ const JobChat = ({ selectedJob, onClose }) => {
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[80vh] flex flex-col">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[80vh] sm:max-h-[85vh] flex flex-col">
         <div className="p-4 border-b flex justify-between items-center">
           <h3 className="text-lg font-semibold">
             Chat: {selectedJob?.position} at {selectedJob?.company}

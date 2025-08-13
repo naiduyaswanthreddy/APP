@@ -1128,7 +1128,7 @@ const ApplicationsTable = ({
 
   // Modify the return statement to handle loading and empty states
   return (
-    <div className="mt-8 flex flex-col h-[calc(100vh-300px)]">
+    <div className="mt-8 flex flex-col">
       {/* Loading State */}
       {loading ? (
         <div className="flex justify-center items-center min-h-[200px]">
@@ -1137,30 +1137,80 @@ const ApplicationsTable = ({
       ) : filteredApplications.length === 0 ? (
         <NoData text="No applications found." />
       ) : (
-      <div className="overflow-x-auto w-full" style={{ maxWidth: '100%', position: 'relative', zIndex: 1 }}>
-        <div className="inline-block min-w-full align-middle">
-          <div className="shadow overflow-hidden border-b border-gray-200 sm:rounded-lg">
-            <table className="min-w-full divide-y divide-gray-200 border border-gray-400">
-              <thead className="bg-gray-50">
-                <tr>
-                  {renderTableHeaders()}
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {filteredApplications.map((application) => {
-                  console.log("Rendering application row:", application.id);
-                  console.log("Application screening_answers:", application.screening_answers);
-                  return (
-                    <tr key={application.id} className="hover:bg-gray-50">
-                      {renderTableCells(application)}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+      <>
+        {/* Mobile card view */}
+        <div className="md:hidden space-y-3">
+          {filteredApplications.map((application) => (
+            <div key={application.id} className="bg-white rounded-lg border p-4 shadow-sm">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-base font-semibold text-gray-900 truncate">{application.student?.name || 'N/A'}</div>
+                  <div className="text-sm text-gray-500 truncate">{application.student?.rollNumber || '—'}</div>
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-gray-700">
+                    {application.student?.department && (
+                      <span className="px-2 py-0.5 bg-gray-100 rounded">{application.student.department}</span>
+                    )}
+                    {application.student?.cgpa !== undefined && (
+                      <span className="px-2 py-0.5 bg-gray-100 rounded">CGPA: {application.student.cgpa}</span>
+                    )}
+                  </div>
+                </div>
+                <div className="shrink-0">
+                  <span className={`px-2 py-1 rounded-full text-xs font-semibold ${statusConfig[application.status]?.class || statusConfig.pending.class}`}>
+                    {statusConfig[application.status]?.label || 'Pending'}
+                  </span>
+                </div>
+              </div>
+              {/* Quick actions */}
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleStudentClick(application.student)}
+                  className="px-3 py-2 text-sm bg-white border rounded-lg hover:bg-gray-50"
+                >
+                  View Profile
+                </button>
+                {application.student?.resumeUrl && (
+                  <a
+                    href={application.student.resumeUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-3 py-2 text-sm bg-white border rounded-lg hover:bg-gray-50"
+                  >
+                    Resume
+                  </a>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Table view for md+ */}
+        <div className="hidden md:block overflow-x-auto w-full" style={{ maxWidth: '100%', position: 'relative', zIndex: 1 }}>
+          <div className="inline-block min-w-full align-middle">
+            <div className="shadow overflow-hidden border-b border-gray-200 sm:rounded-lg">
+              <table className="min-w-full divide-y divide-gray-200 border border-gray-400">
+                <thead className="bg-gray-50">
+                  <tr>
+                    {renderTableHeaders()}
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {filteredApplications.map((application) => {
+                    console.log("Rendering application row:", application.id);
+                    console.log("Application screening_answers:", application.screening_answers);
+                    return (
+                      <tr key={application.id} className="hover:bg-gray-50">
+                        {renderTableCells(application)}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
-      </div>
+      </>
       )}
     </div>
   );

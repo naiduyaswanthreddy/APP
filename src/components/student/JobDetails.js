@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { collection, getDocs, query, where, doc, getDoc, addDoc, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { db, auth } from '../../firebase';
+import { getCurrentStudentRollNumber } from '../../utils/studentIdentity';
 import { ToastContainer, toast } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import { createStatusUpdateNotification, createSystemAlertNotification } from '../../utils/notificationHelpers';
@@ -179,12 +180,18 @@ const JobDetails = () => {
   const fetchSavedJobs = async () => {
     try {
       const user = auth.currentUser;
-      if (user) {
-        const savedJobsRef = collection(db, 'saved_jobs');
-        const q = query(savedJobsRef, where('student_id', '==', user.uid));
-        const querySnapshot = await getDocs(q);
-        setSavedJobs(querySnapshot.docs.map(doc => doc.data().job_id));
+      if (!user) return;
+      const roll = await getCurrentStudentRollNumber();
+      const savedJobsRef = collection(db, 'saved_jobs');
+      let q1;
+      if (roll) {
+        q1 = query(savedJobsRef, where('student_rollNumber', '==', roll));
+      } else {
+        console.warn('SavedJobs: rollNumber missing, falling back to uid');
+        q1 = query(savedJobsRef, where('student_id', '==', user.uid));
       }
+      const querySnapshot = await getDocs(q1);
+      setSavedJobs(querySnapshot.docs.map(doc => doc.data().job_id));
     } catch (error) {
       toast.error("Error fetching saved jobs!");
     }
@@ -195,8 +202,12 @@ const JobDetails = () => {
       const user = auth.currentUser;
       if (user) {
         const applicationsRef = collection(db, 'applications');
-        const q = query(applicationsRef, where('student_id', '==', user.uid));
-        const querySnapshot = await getDocs(q);
+        const roll = await getCurrentStudentRollNumber();
+        const q1 = roll 
+          ? query(applicationsRef, where('student_rollNumber', '==', roll))
+          : query(applicationsRef, where('student_id', '==', user.uid));
+        if (!roll) console.warn('Applications: rollNumber missing, using uid fallback');
+        const querySnapshot = await getDocs(q1);
         
         const jobIds = [];
         const statuses = {};
@@ -230,9 +241,11 @@ const JobDetails = () => {
     try {
       const user = auth.currentUser;
       if (user) {
+        const roll = await getCurrentStudentRollNumber();
         await addDoc(collection(db, 'saved_jobs'), {
           job_id: jobId,
           student_id: user.uid,
+          student_rollNumber: roll || null,
           saved_at: serverTimestamp()
         });
         setSavedJobs([...savedJobs, jobId]);
@@ -260,12 +273,12 @@ const JobDetails = () => {
       setApplying(true);
 
       // Check if already applied
+      const roll = await getCurrentStudentRollNumber();
+      const appsCol = collection(db, 'applications');
       const existingApplication = await getDocs(
-        query(
-          collection(db, 'applications'),
-          where('jobId', '==', jobId),
-          where('studentId', '==', auth.currentUser.uid)
-        )
+        roll
+          ? query(appsCol, where('jobId', '==', jobId), where('student_rollNumber', '==', roll))
+          : query(appsCol, where('jobId', '==', jobId), where('studentId', '==', auth.currentUser.uid))
       );
 
       if (!existingApplication.empty) {
@@ -277,6 +290,7 @@ const JobDetails = () => {
       const applicationData = {
         jobId: jobId,
         studentId: auth.currentUser.uid,
+        student_rollNumber: roll || null,
         status: 'pending',
         appliedAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -293,7 +307,7 @@ const JobDetails = () => {
 
       // Send notification to student
       try {
-        await createStatusUpdateNotification(auth.currentUser.uid, {
+        await createStatusUpdateNotification(roll || auth.currentUser.uid, {
           job: { position: selectedJob.position },
           status: 'pending'
         });
@@ -694,7 +708,7 @@ case 'multiple-choice':
   };
 
   return (
-    <div className="container mx-auto px-4 py-0 max-w-6xl">
+    <div className="container mx-auto px-3 sm:px-4 py-0 max-w-6xl">
       <ToastContainer style={{ zIndex: 9999 }} />
       
       {/* Back button */}
@@ -709,10 +723,10 @@ case 'multiple-choice':
       {/* Main content card */}
       <div className="bg-white rounded-xl shadow-xl overflow-hidden">
         {/* Header section */}
-        <div className="relative bg-gradient-to-r from-slate-300 to-slate-400 p-8 text-gray-800">
+        <div className="relative bg-gradient-to-r from-slate-300 to-slate-400 p-6 md:p-8 text-gray-800">
 
 
-          <div className="flex justify-between items-start">
+          <div className="flex flex-col md:flex-row md:justify-between md:items-start gap-4">
             <div>
               <div className="flex items-center space-x-2 mb-1">
                 {(Array.isArray(selectedJob.jobTypes) ? selectedJob.jobTypes : 
@@ -723,8 +737,8 @@ case 'multiple-choice':
                   </span>
                 ))}
               </div>
-              <h1 className="text-3xl font-bold mb-2">{selectedJob.position}</h1>
-              <p className="text-xl opacity-90 mb-4">{selectedJob.company}</p>
+              <h1 className="text-2xl md:text-3xl font-bold mb-2 break-words">{selectedJob.position}</h1>
+              <p className="text-lg md:text-xl opacity-90 mb-4 break-words">{selectedJob.company}</p>
               
                     <div className="flex flex-wrap gap-4 mt-4">
                       <div className="flex items-center">
@@ -765,7 +779,7 @@ case 'multiple-choice':
 
             </div>
             
-            <div className="flex flex-col items-end">
+            <div className="flex flex-col items-start md:items-end">
               <div className={`px-4 py-2 rounded-lg text-sm font-medium mb-3 ${isEligible ? 'bg-green-500 text-white' : 'bg-red-500 text-white'}`}>
                 {isEligible ? 'You are eligible' : 'Not eligible'}
               </div>
@@ -779,7 +793,7 @@ case 'multiple-choice':
           </div>
           
           {/* Action buttons */}
-          <div className="absolute bottom-0 right-0 transform translate-y-1/2 px-8 flex gap-3">
+          <div className="md:absolute md:bottom-0 md:right-0 md:transform md:translate-y-1/2 px-0 md:px-8 mt-4 md:mt-0 flex flex-wrap gap-2">
             <button
               onClick={async () => {
                 try {
@@ -890,8 +904,8 @@ case 'multiple-choice':
         )}
         
         {/* Tab navigation */}
-        <div className="border-b border-gray-200 px-6">
-          <nav className="flex space-x-8" aria-label="Tabs">
+        <div className="border-b border-gray-200 px-4 sm:px-6 overflow-x-auto">
+          <nav className="flex gap-6 min-w-max whitespace-nowrap" aria-label="Tabs">
             <button
               onClick={() => setActiveTab('details')}
               className={`py-4 px-1 border-b-2 font-medium text-sm ${activeTab === 'details' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}
@@ -926,7 +940,7 @@ case 'multiple-choice':
         </div>
         
         {/* Tab content */}
-        <div className="p-6">
+        <div className="p-4 sm:p-6">
           {/* Job Details Tab */}
           {activeTab === 'details' && (
             <div className="space-y-8">
