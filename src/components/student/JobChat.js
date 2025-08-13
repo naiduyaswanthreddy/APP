@@ -66,6 +66,32 @@ const JobChat = ({ selectedJob, onClose }) => {
           hasJoinedChat: true,
           lastChatActivity: serverTimestamp()
         });
+
+        // Send notification to other students that someone joined the chat
+        try {
+          const otherApplicantsQuery = query(
+            collection(db, 'applications'),
+            where("jobId", "==", selectedJob.id),
+            where("student_id", "!=", auth.currentUser.uid)
+          );
+          
+          const otherApplicantsSnapshot = await getDocs(otherApplicantsQuery);
+          otherApplicantsSnapshot.forEach(async (applicantDoc) => {
+            const applicantData = applicantDoc.data();
+            try {
+              await createChatMessageNotification(
+                applicantData.student_id,
+                selectedJob,
+                'System',
+                `${auth.currentUser.displayName || 'A student'} has joined the chat for ${selectedJob.position}`
+              );
+            } catch (error) {
+              console.error('Error sending join notification:', error);
+            }
+          });
+        } catch (error) {
+          console.error('Error sending join notifications:', error);
+        }
       }
     } catch (error) {
       console.error("Error ensuring joined status:", error);
@@ -121,41 +147,26 @@ const JobChat = ({ selectedJob, onClose }) => {
   // Function to send a new message
   const sendMessage = async () => {
     if (!newMessage.trim() || !selectedJob || !auth.currentUser) return;
-    
+
     try {
-      const messagesRef = collection(db, "jobChats");
-      await addDoc(messagesRef, {
-        jobId: selectedJob.id,
-        studentId: auth.currentUser.uid,
-        senderName: auth.currentUser.displayName || "Student",
-        senderRole: "student",
+      const messageData = {
         message: newMessage.trim(),
+        senderId: auth.currentUser.uid,
+        senderName: auth.currentUser.displayName || 'Student',
+        senderRole: 'student',
         timestamp: serverTimestamp(),
-        isRead: false
-      });
-      
-      // Update last activity timestamp
-      const applicationsRef = collection(db, "applications");
-      const q = query(
-        applicationsRef, 
-        where("student_id", "==", auth.currentUser.uid),
-        where("jobId", "==", selectedJob.id)
-      );
-      
-      const querySnapshot = await getDocs(q);
-      if (!querySnapshot.empty) {
-        await updateDoc(doc(db, "applications", querySnapshot.docs[0].id), {
-          lastChatActivity: serverTimestamp(),
-          hasUnreadMessages: true
-        });
-      }
+        jobId: selectedJob.id,
+        studentId: auth.currentUser.uid
+      };
+
+      await addDoc(collection(db, 'jobChats'), messageData);
       
       // Send notifications to other students who have joined this chat
       // Only if they have notifications enabled
       if (notificationsEnabled) {
         // Get all students who have applied to this job
         const allApplicantsQuery = query(
-          applicationsRef,
+          collection(db, 'applications'),
           where("jobId", "==", selectedJob.id)
         );
         
@@ -164,18 +175,20 @@ const JobChat = ({ selectedJob, onClose }) => {
         // For each applicant (except the sender)
         allApplicantsSnapshot.forEach(async (applicantDoc) => {
           const applicantData = applicantDoc.data();
-          const recipientId = applicantData.student_id;
+          const recipientId = applicantData.studentId || applicantData.student_id;
           
           // Don't send notification to the sender
           if (recipientId !== auth.currentUser.uid) {
-            // Check if the recipient has notifications enabled (you might store this in user preferences)
-            // For now, we'll assume all users want notifications
-            await createChatMessageNotification(
-              recipientId,
-              selectedJob,
-              auth.currentUser.displayName || "Student",
-              newMessage.trim()
-            );
+            try {
+              await createChatMessageNotification(
+                recipientId,
+                selectedJob,
+                auth.currentUser.displayName || "Student",
+                newMessage.trim()
+              );
+            } catch (error) {
+              console.error('Error sending chat notification:', error);
+            }
           }
         });
       }

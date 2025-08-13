@@ -2,10 +2,12 @@ import React, { useState, useEffect, useRef } from 'react';
 import { ToastContainer, toast } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import { collection, addDoc, serverTimestamp, getDocs, query, where, doc, getDoc, updateDoc, deleteDoc, Timestamp } from 'firebase/firestore';
+import { logJobActivity } from '../../utils/activityLogger';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { db, auth } from '../../firebase';
 import ReactQuill from 'react-quill';
 import 'react-quill/dist/quill.snow.css';
+import { createJobEventNotification, createSystemAlertNotification } from '../../utils/notificationHelpers';
 
 const SKILL_SUGGESTIONS = [
   // Programming Languages
@@ -28,11 +30,7 @@ const LOCATION_SUGGESTIONS = [
 ];
 
 const DEPARTMENT_SUGGESTIONS = [
-  "Computer Science", "Information Technology", "Electronics & Communication",
-  "Electrical Engineering", "Mechanical Engineering", "Civil Engineering",
-  "Chemical Engineering", "Biotechnology", "Aerospace Engineering",
-  "Production Engineering", "Industrial Engineering", "Metallurgical Engineering",
-  "Mathematics", "Physics", "Chemistry", "Business Administration", "Commerce"
+  "CSE", "IT", "ECE", "EEE", "ME", "CE", "CHE", "AIE", "CCE", "MBA"
 ];
 
 const JOB_CATEGORIES = [
@@ -77,6 +75,7 @@ const JobPost = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const [editingJobId, setEditingJobId] = useState(null);
+  const [editingJob, setEditingJob] = useState(null);
   const [previewMode, setPreviewMode] = useState(false);
   const [suggestions, setSuggestions] = useState({
     companies: [],
@@ -275,6 +274,7 @@ const JobPost = () => {
           variablePay: jobData.variablePay || '',
           bonuses: jobData.bonuses || '',
           ppoPportunity: jobData.ppoPportunity || false,
+          bondRequired: jobData.bondRequired || false,
           bondDetails: jobData.bondDetails || '',
           rounds: Array.isArray(jobData.rounds) ? jobData.rounds : [{ name: '' }],
           roundsDescription: jobData.roundsDescription || '',
@@ -293,6 +293,7 @@ const JobPost = () => {
           newAttachmentName: '',
           newAttachmentLink: '',
           companyLogo: jobData.companyLogo || '',
+          externalLinks: Array.isArray(jobData.externalLinks) ? jobData.externalLinks : [],
           externalLink: jobData.externalLink || '',
           requireExternalLink: jobData.requireExternalLink || false
         };
@@ -471,6 +472,16 @@ const JobPost = () => {
     if (field === 'bondDetails' && jobForm.bondRequired && !value) {
       error = 'Bond details are required when bond is required';
     }
+    if (field === 'externalLinks') {
+      const mandatoryLinks = value.filter(link => link.mandatoryBeforeApply);
+      if (mandatoryLinks.length > 0) {
+        // Validate that mandatory links have proper labels and URLs
+        const invalidLinks = mandatoryLinks.filter(link => !link.label || !link.url);
+        if (invalidLinks.length > 0) {
+          error = 'Mandatory external links must have both label and URL';
+        }
+      }
+    }
     return error;
   };
 
@@ -601,178 +612,185 @@ const JobPost = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setIsSubmitting(true);
-    const allTouched = Object.keys(jobForm).reduce((acc, field) => {
-      acc[field] = true;
-      return acc;
-    }, {});
-    setTouched(allTouched);
-    let shouldValidate = jobForm.publishOption !== 'Draft';
-    if (shouldValidate) {
-      const { isValid, firstErrorField } = validateForm();
-      if (!isValid) {
-        toast.error('Please fix the errors before submitting');
-        if (firstErrorField) {
-          firstErrorRef.current = document.getElementById(`field-${firstErrorField}`);
-        }
-        setIsSubmitting(false);
+    if (!validateForm()) return;
+
+    try {
+      setIsSubmitting(true);
+      const user = auth.currentUser;
+      if (!user) {
+        toast.error('Please login to create a job posting');
         return;
       }
-    }
-    try {
+
       const jobData = {
         ...jobForm,
-        updatedAt: serverTimestamp(),
-        ineligibleStudents: jobForm.ineligibleStudents.split(',').map(r => r.trim()).filter(Boolean)
+        created_by: user.uid,
+        created_at: serverTimestamp(),
+        updated_at: serverTimestamp(),
+        status: 'active',
+        applicationsCount: 0,
+        filledPositions: 0
       };
-      if (!editingJobId) {
-        jobData.createdAt = serverTimestamp();
-        jobData.createdBy = auth.currentUser?.uid;
-        jobData.applications = 0;
+
+      // Add job to database
+      const docRef = await addDoc(collection(db, 'jobs'), jobData);
+      
+      // Create notifications for all students
+      await createNotificationsForJob(docRef.id, jobData);
+
+      // Send admin notification about job creation
+      try {
+        await createJobEventNotification(
+          'Job Posting Created',
+          `New job posting "${jobForm.position}" at ${jobForm.company} has been created successfully.`,
+          `/admin/jobs/${docRef.id}`
+        );
+      } catch (error) {
+        console.error('Error sending admin notification:', error);
       }
-      if (jobForm.publishOption === 'Publish Now') {
-        jobData.status = 'Open for Applications';
-      } else if (jobForm.publishOption === 'Schedule') {
-        const publishDate = new Date(jobForm.scheduledPublishDate);
-        const now = new Date();
-        if (jobForm.scheduledPublishDate) {
-          jobData.scheduledPublishDate = Timestamp.fromDate(publishDate);
-        }
-        if (jobForm.scheduledCloseDate) {
-          jobData.scheduledCloseDate = Timestamp.fromDate(new Date(jobForm.scheduledCloseDate));
-        }
-        if (publishDate <= now) {
-          jobData.status = 'Open for Applications';
-        } else {
-          jobData.status = 'Yet to Open';
-        }
-      } else if (jobForm.publishOption === 'Draft') {
-        jobData.status = 'Draft';
-      }
-      delete jobData.newSkill;
-      delete jobData.newTag;
-      delete jobData.newAttachmentName;
-      delete jobData.newAttachmentLink;
-      if (editingJobId) {
-        const jobRef = doc(db, 'jobs', editingJobId);
-        await updateDoc(jobRef, jobData);
-        // Update company job posting count and last job posted date
-        const companyQuery = query(collection(db, 'companies'), where('companyName', '==', jobData.company));
-        const companySnapshot = await getDocs(companyQuery);
-        if (!companySnapshot.empty) {
-          const companyDoc = companySnapshot.docs[0];
-          const companyRef = doc(db, 'companies', companyDoc.id);
-          await updateDoc(companyRef, {
-            jobPostingsCount: companyDoc.data().jobPostingsCount ? companyDoc.data().jobPostingsCount + 1 : 1,
-            lastJobPosted: serverTimestamp()
-          });
-        }
-        toast.success('Job updated successfully!');
-        navigate(`/admin/job-applications/${editingJobId}`);
-      } else {
-        const docRef = await addDoc(collection(db, 'jobs'), jobData);
-        // Update company job posting count and last job posted date
-        const companyQuery = query(collection(db, 'companies'), where('companyName', '==', jobData.company));
-        const companySnapshot = await getDocs(companyQuery);
-        if (!companySnapshot.empty) {
-          const companyDoc = companySnapshot.docs[0];
-          const companyRef = doc(db, 'companies', companyDoc.id);
-          await updateDoc(companyRef, {
-            jobPostingsCount: companyDoc.data().jobPostingsCount ? companyDoc.data().jobPostingsCount + 1 : 1,
-            lastJobPosted: serverTimestamp()
-          });
-        }
-        console.log('Job created with ID:', docRef.id);
-        if (jobForm.publishOption === 'Publish Now') {
-          await createNotificationsForJob(docRef.id, jobData);
-          toast.success('Job posted successfully with notifications!');
-        } else if (jobForm.publishOption === 'Schedule') {
-          toast.success('Job scheduled successfully!');
-        } else {
-          toast.success('Job saved as draft!');
-        }
-        if (jobForm.publishOption === 'Schedule' || jobForm.publishOption === 'Draft') {
-          const newJob = { id: docRef.id, ...jobData };
-          if (jobForm.publishOption === 'Schedule') {
-            setScheduledJobs(prev => [...prev, newJob]);
-          } else {
-            setDraftJobs(prev => [...prev, newJob]);
-          }
-        }
-        // Only reset form if not editing
-        if (!editingJobId) {
-          setJobForm({
-            company: '',
-            position: '',
-            jobRoles: '',
-            description: '',
-            jobTypes: '',
-            jobSource: 'On-Campus',
-            modeOfVisit: 'Physical',
-            jobCategory: '',
-            jobTags: [],
-            newTag: '',
-            workMode: '',
-            location: '',
-            deadline: '',
-            applyByTime: '',
-            dateOfVisit: '',
-            hiringStartDate: '',
-            internshipStartDate: '',
-            internshipDuration: '',
-            internshipDurationUnit: 'Months',
-            joiningDate: '',
-            tenthPercentage: '',
-            twelfthPercentage: '',
-            diplomaPercentage: '',
-            useScoreRange: false,
-            minCGPA: 0,
-            maxCGPA: 10,
-            maxCurrentArrears: 0,
-            maxHistoryArrears: 0,
-            genderPreference: 'any',
-            eligibleBatch: [],
-            eligibleDepartments: [],
-            ineligibleStudents: '',
-            compensationType: 'Fixed Amount',
-            ctc: '',
-            ctcUnit: 'Yearly',
-            minCtc: '',
-            maxCtc: '',
-            salary: '',
-            salaryUnit: 'Monthly',
-            minSalary: '',
-            maxSalary: '',
-            basePay: '',
-            variablePay: '',
-            bonuses: '',
-            ppoPportunity: false,
-            bondDetails: '',
-            rounds: [{ name: '' }],
-            roundsDescription: '',
-            skills: [],
-            newSkill: '',
-            screeningQuestions: [{ question: '', type: 'text', options: [] }],
-            jobPolicy: 'Global',
-            whoCanApply: 'Eligible',
-            jobStatus: 'Open for Applications',
-            publishOption: 'Publish Now',
-            scheduledPublishDate: '',
-            scheduledCloseDate: '',
-            companyPortalLink: '',
-            externalRegistrationLink: '',
-            attachments: [],
-            newAttachmentName: '',
-            newAttachmentLink: '',
-            companyLogo: ''
-          });
-          setErrors({});
-          setTouched({});
-        }
+
+      toast.success('Job posting created successfully!');
+      resetForm();
+      if (onJobCreated) {
+        onJobCreated(docRef.id);
       }
     } catch (error) {
-      console.error('Error saving job:', error);
-      toast.error(`Failed to ${editingJobId ? 'update' : 'create'} job: ${error.message}`);
+      console.error('Error creating job posting:', error);
+      toast.error('Failed to create job posting');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const resetForm = () => {
+    setJobForm({
+      company: '',
+      position: '',
+      jobRoles: '',
+      description: '',
+      jobTypes: '',
+      jobSource: 'On-Campus',
+      modeOfVisit: 'Physical',
+      jobCategory: '',
+      jobTags: [],
+      newTag: '',
+      workMode: '',
+      location: '',
+      deadline: '',
+      applyByTime: '',
+      dateOfVisit: '',
+      hiringStartDate: '',
+      internshipStartDate: '',
+      internshipDuration: '',
+      internshipDurationUnit: 'Months',
+      joiningDate: '',
+      tenthPercentage: '',
+      twelfthPercentage: '',
+      diplomaPercentage: '',
+      useScoreRange: false,
+      minCGPA: 0,
+      maxCGPA: 10,
+      maxCurrentArrears: 0,
+      maxHistoryArrears: 0,
+      genderPreference: 'any',
+      eligibleBatch: [],
+      eligibleDepartments: [],
+      ineligibleStudents: '',
+      compensationType: 'Fixed Amount',
+      ctc: '',
+      ctcUnit: 'Yearly',
+      minCtc: '',
+      maxCtc: '',
+      salary: '',
+      salaryUnit: 'Monthly',
+      minSalary: '',
+      maxSalary: '',
+      basePay: '',
+      variablePay: '',
+      bonuses: '',
+      ppoPportunity: false,
+      bondRequired: false,
+      bondDetails: '',
+      rounds: [{ name: '' }],
+      roundsDescription: '',
+      skills: [],
+      newSkill: '',
+      screeningQuestions: [{ question: '', type: 'text', options: [] }],
+      jobPolicy: 'Global',
+      whoCanApply: 'Eligible',
+      jobStatus: 'Open for Applications',
+      publishOption: 'Publish Now',
+      scheduledPublishDate: '',
+      scheduledCloseDate: '',
+      companyPortalLink: '',
+      externalRegistrationLink: '',
+      attachments: [],
+      newAttachmentName: '',
+      newAttachmentLink: '',
+      companyLogo: '',
+      externalLinks: [],
+      newExternalLinkLabel: '',
+      newExternalLinkUrl: '',
+      newExternalLinkMandatory: false
+    });
+    setErrors({});
+    setTouched({});
+    setEditingJobId(null);
+    setEditingJob(null);
+  };
+
+  const onJobCreated = (jobId) => {
+    // Callback function for when a job is created
+    console.log('Job created with ID:', jobId);
+  };
+
+  const onJobUpdated = (jobId) => {
+    // Callback function for when a job is updated
+    console.log('Job updated with ID:', jobId);
+  };
+
+  const handleUpdate = async (e) => {
+    e.preventDefault();
+    if (!validateForm() || !editingJob) return;
+
+    try {
+      setIsSubmitting(true);
+      const user = auth.currentUser;
+      if (!user) {
+        toast.error('Please login to update a job posting');
+        return;
+      }
+
+      const updateData = {
+        ...jobForm,
+        updated_by: user.uid,
+        updated_at: serverTimestamp()
+      };
+
+      // Update job in database
+      const jobRef = doc(db, 'jobs', editingJob.id);
+      await updateDoc(jobRef, updateData);
+
+      // Send admin notification about job update
+      try {
+        await createJobEventNotification(
+          'Job Posting Updated',
+          `Job posting "${jobForm.position}" at ${jobForm.company} has been updated successfully.`,
+          `/admin/jobs/${editingJob.id}`
+        );
+      } catch (error) {
+        console.error('Error sending admin notification:', error);
+      }
+
+      toast.success('Job posting updated successfully!');
+      resetForm();
+      setEditingJob(null);
+      if (onJobUpdated) {
+        onJobUpdated(editingJob.id);
+      }
+    } catch (error) {
+      console.error('Error updating job posting:', error);
+      toast.error('Failed to update job posting');
     } finally {
       setIsSubmitting(false);
     }
@@ -1720,7 +1738,7 @@ const JobPost = () => {
                 </div>
               </div>
             )}
-            """            <div className="mb-4" id="field-bondRequired">
+            <div className="mb-4" id="field-bondRequired">
               <label className="flex items-center space-x-2">
                 <input
                   type="checkbox"
@@ -1732,10 +1750,22 @@ const JobPost = () => {
                       bondRequired: isChecked,
                       bondDetails: isChecked ? jobForm.bondDetails : ''
                     });
+                    // Clear bond details if bond is not required
+                    if (!isChecked) {
+                      setJobForm(prev => ({
+                        ...prev,
+                        bondDetails: ''
+                      }));
+                    }
                   }}
                   className="w-5 h-5 rounded text-blue-600"
                 />
                 <span className="text-sm font-medium text-gray-700">Bond Required?</span>
+                {jobForm.bondRequired && (
+                  <span className="ml-2 px-2 py-1 bg-orange-100 text-orange-800 text-xs rounded-full font-medium">
+                    ⚠️ Bond Required
+                  </span>
+                )}
               </label>
             </div>
 
@@ -1751,16 +1781,6 @@ const JobPost = () => {
                 {touched.bondDetails && errors.bondDetails && <p className="text-red-600 text-sm mt-1">{errors.bondDetails}</p>}
               </div>
             )}
-
-            <div id="field-bondDetails">
-              <label className="block text-sm font-medium text-gray-700 mb-1">Bond Details</label>
-              <ReactQuill
-                value={jobForm.bondDetails}
-                onChange={value => setJobForm({...jobForm, bondDetails: value})}
-                onBlur={() => handleBlur('bondDetails')}
-                placeholder="Bond Details (Rich text support)"
-              />
-            </div>""
           </AnimatedCard>
           <AnimatedCard>
             <h3 className="text-xl font-semibold text-gray-700 mb-4 pl-4 border-l-4 border-blue-500 flex items-center">
@@ -2160,20 +2180,31 @@ const JobPost = () => {
               9. External Links & Resources
             </h3>
             <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 mb-2">External Links</label>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                External Links
+                {jobForm.externalLinks.filter(link => link.mandatoryBeforeApply).length > 0 && (
+                  <span className="ml-2 px-2 py-1 bg-orange-100 text-orange-800 text-xs rounded-full font-medium">
+                    ⚠️ {jobForm.externalLinks.filter(link => link.mandatoryBeforeApply).length} mandatory link(s)
+                  </span>
+                )}
+              </label>
               <div className="space-y-3 mb-3">
                 {jobForm.externalLinks.map((link, index) => (
-                  <div key={index} className="flex items-center gap-2 p-3 border border-gray-200 rounded-lg">
+                  <div key={index} className={`flex items-center gap-2 p-3 border rounded-lg ${
+                    link.mandatoryBeforeApply ? 'border-orange-300 bg-orange-50' : 'border-gray-200'
+                  }`}>
                     <div className="flex-1">
-                      <div className="font-medium">{link.label}</div>
+                      <div className="font-medium flex items-center">
+                        {link.label}
+                        {link.mandatoryBeforeApply && (
+                          <span className="ml-2 px-2 py-1 bg-red-100 text-red-800 rounded-full text-xs">
+                            Mandatory before apply
+                          </span>
+                        )}
+                      </div>
                       <a href={link.url} target="_blank" rel="noopener noreferrer" className="text-sm text-blue-600 hover:underline">
                         {link.url}
                       </a>
-                      {link.mandatoryBeforeApply && (
-                        <span className="ml-2 px-2 py-1 bg-red-100 text-red-800 rounded-full text-xs">
-                          Mandatory before apply
-                        </span>
-                      )}
                     </div>
                     <button
                       type="button"
@@ -2181,37 +2212,44 @@ const JobPost = () => {
                         const newLinks = jobForm.externalLinks.filter((_, i) => i !== index);
                         setJobForm({...jobForm, externalLinks: newLinks});
                       }}
-                      className="text-red-500 hover:text-red-700 transition"
+                      className="text-red-500 hover:text-red-700 transition p-1"
+                      title="Remove link"
                     >
-                      Remove
+                      ✕
                     </button>
                   </div>
                 ))}
               </div>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                <input
-                  type="text"
-                  className="p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
-                  value={jobForm.newExternalLinkLabel}
-                  onChange={e => setJobForm({...jobForm, newExternalLinkLabel: e.target.value})}
-                  placeholder="Link Label"
-                />
-                <input
-                  type="url"
-                  className="p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
-                  value={jobForm.newExternalLinkUrl}
-                  onChange={e => setJobForm({...jobForm, newExternalLinkUrl: e.target.value})}
-                  placeholder="https://example.com"
-                />
+                <div>
+                  <input
+                    type="text"
+                    className="p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition w-full"
+                    value={jobForm.newExternalLinkLabel}
+                    onChange={e => setJobForm({...jobForm, newExternalLinkLabel: e.target.value})}
+                    placeholder="Link Label (e.g., Company Portal)"
+                    required
+                  />
+                </div>
+                <div>
+                  <input
+                    type="url"
+                    className="p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition w-full"
+                    value={jobForm.newExternalLinkUrl}
+                    onChange={e => setJobForm({...jobForm, newExternalLinkUrl: e.target.value})}
+                    placeholder="https://example.com"
+                    required
+                  />
+                </div>
                 <div className="flex items-center gap-2">
-                  <label className="flex items-center">
+                  <label className="flex items-center cursor-pointer">
                     <input
                       type="checkbox"
                       checked={jobForm.newExternalLinkMandatory}
                       onChange={e => setJobForm({...jobForm, newExternalLinkMandatory: e.target.checked})}
-                      className="mr-2"
+                      className="mr-2 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
                     />
-                    <span className="text-sm">Mandatory</span>
+                    <span className="text-sm font-medium text-gray-700">Mandatory before apply</span>
                   </label>
                 </div>
               </div>

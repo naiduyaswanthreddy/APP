@@ -4,6 +4,7 @@ import { collection, getDocs, query, where, doc, getDoc, addDoc, serverTimestamp
 import { db, auth } from '../../firebase';
 import { ToastContainer, toast } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
+import { createStatusUpdateNotification, createSystemAlertNotification } from '../../utils/notificationHelpers';
 import {
   ChevronLeft,
   MapPin,
@@ -45,6 +46,7 @@ const JobDetails = () => {
   const [applicationStatuses, setApplicationStatuses] = useState({});
   const [applicationAnswers, setApplicationAnswers] = useState({});
   const [screeningAnswers, setScreeningAnswers] = useState({});
+  const [bondAgreed, setBondAgreed] = useState(false);
   const [studentProfile, setStudentProfile] = useState({
     cgpa: 0,
     skills: [],
@@ -54,6 +56,9 @@ const JobDetails = () => {
   const [timeLeft, setTimeLeft] = useState('');
   const [activeTab, setActiveTab] = useState('details'); // New state for tab navigation
   const [linkVisited, setLinkVisited] = useState({});
+  const [applying, setApplying] = useState(false);
+  const [hasApplied, setHasApplied] = useState(false);
+
 
   useEffect(() => {
     if (jobId) {
@@ -61,6 +66,10 @@ const JobDetails = () => {
       fetchStudentProfile();
       fetchSavedJobs();
       fetchAppliedJobs();
+      // Reset bond agreement when switching jobs
+      setBondAgreed(false);
+      // Reset external links visited state when switching jobs
+      setLinkVisited({});
     }
   }, [jobId]);
 
@@ -241,40 +250,131 @@ const JobDetails = () => {
     }));
   };
 
-  const handleApply = async (jobId) => {
-    try {
-      const user = auth.currentUser;
-      if (user) {
-        if (selectedJob?.screeningQuestions?.length > 0) {
-          const unansweredQuestions = selectedJob.screeningQuestions.filter(
-            (_, index) => {
-              const ans = screeningAnswers[index];
-              return ans === undefined || ans === null || String(ans).trim() === '';
-            }
-          );
-          
-          if (unansweredQuestions.length > 0) {
-            toast.warning("Please answer all screening questions before applying.");
-            return;
-          }
-        }
-        
-        await addDoc(collection(db, 'applications'), {
-          job_id: jobId,
-          student_id: user.uid,
-          status: 'pending',
-          applied_at: serverTimestamp(),
-          screening_answers: screeningAnswers
-        });
-        
-        setAppliedJobs([...appliedJobs, selectedJob.id]);
-        setScreeningAnswers({});
-        toast.success("Application submitted successfully!");
-      }
-    } catch (error) {
-      console.error("Error submitting application:", error);
-      toast.error("Error submitting application!");
+  const handleApply = async () => {
+    if (!auth.currentUser) {
+      toast.error('Please login to apply for this job');
+      return;
     }
+
+    try {
+      setApplying(true);
+
+      // Check if already applied
+      const existingApplication = await getDocs(
+        query(
+          collection(db, 'applications'),
+          where('jobId', '==', jobId),
+          where('studentId', '==', auth.currentUser.uid)
+        )
+      );
+
+      if (!existingApplication.empty) {
+        toast.error('You have already applied for this job');
+        return;
+      }
+
+      // Create application
+      const applicationData = {
+        jobId: jobId,
+        studentId: auth.currentUser.uid,
+        status: 'pending',
+        appliedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        job: {
+          position: selectedJob.position,
+          company: selectedJob.company,
+          location: selectedJob.location,
+          ctc: selectedJob.ctc,
+          salary: selectedJob.salary
+        }
+      };
+
+      const applicationRef = await addDoc(collection(db, 'applications'), applicationData);
+
+      // Send notification to student
+      try {
+        await createStatusUpdateNotification(auth.currentUser.uid, {
+          job: { position: selectedJob.position },
+          status: 'pending'
+        });
+      } catch (error) {
+        console.error('Error sending application notification:', error);
+      }
+
+      // Send admin notification about new application
+      try {
+        await createSystemAlertNotification(
+          'New Job Application',
+          `A new application has been submitted for ${selectedJob.position} at ${selectedJob.company}.`,
+          `/admin/job-applications/${jobId}`
+        );
+      } catch (error) {
+        console.error('Error sending admin notification:', error);
+      }
+
+      toast.success('Application submitted successfully!');
+      setHasApplied(true);
+      
+      // Update local state
+      setSelectedJob(prev => ({
+        ...prev,
+        applicationsCount: (prev.applicationsCount || 0) + 1
+      }));
+
+    } catch (error) {
+      console.error('Error applying for job:', error);
+      toast.error('Failed to submit application');
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  const getValidationStatus = () => {
+    const status = {
+      bondAgreement: { required: false, completed: true, message: '' },
+      externalLinks: { required: false, completed: true, message: '' },
+      screeningQuestions: { required: false, completed: true, message: '' }
+    };
+
+    // Check bond agreement
+    if (selectedJob?.bondRequired) {
+      status.bondAgreement.required = true;
+      status.bondAgreement.completed = bondAgreed;
+      status.bondAgreement.message = bondAgreed ? 'Bond terms agreed' : 'Bond agreement required';
+    }
+
+    // Check external links
+    const mandatoryLinks = (selectedJob?.externalLinks || []).filter(link => link.mandatoryBeforeApply);
+    if (mandatoryLinks.length > 0) {
+      status.externalLinks.required = true;
+      const unvisitedMandatoryLinks = mandatoryLinks.filter(link => !linkVisited[link.url]);
+      status.externalLinks.completed = unvisitedMandatoryLinks.length === 0;
+      status.externalLinks.message = unvisitedMandatoryLinks.length === 0 
+        ? `All ${mandatoryLinks.length} mandatory links visited`
+        : `${unvisitedMandatoryLinks.length} of ${mandatoryLinks.length} mandatory links remaining`;
+    }
+
+    // Check screening questions
+    if (selectedJob?.screeningQuestions?.length > 0) {
+      status.screeningQuestions.required = true;
+      const unansweredQuestions = selectedJob.screeningQuestions.filter(
+        (_, index) => {
+          const ans = screeningAnswers[index];
+          return ans === undefined || ans === null || String(ans).trim() === '';
+        }
+      );
+      status.screeningQuestions.completed = unansweredQuestions.length === 0;
+      status.screeningQuestions.message = unansweredQuestions.length === 0
+        ? `All ${selectedJob.screeningQuestions.length} questions answered`
+        : `${unansweredQuestions.length} of ${selectedJob.screeningQuestions.length} questions remaining`;
+    }
+
+    return status;
+  };
+
+  const isFormValid = () => {
+    const status = getValidationStatus();
+    return status.bondAgreement.completed && status.externalLinks.completed && status.screeningQuestions.completed;
   };
 
   const checkEligibility = (job) => {
@@ -462,6 +562,7 @@ const JobInfoCard = ({ icon, label, value, iconBg, iconColor }) => (
 
   const isEligible = checkEligibility(selectedJob);
   const isApplied = appliedJobs.includes(selectedJob.id);
+  const isWithdrawn = isApplied && applicationStatuses[selectedJob.id] === 'withdrawn';
   const isSaved = savedJobs.includes(selectedJob.id);
   const eligibilityReasons = !isEligible ? getEligibilityDetails(selectedJob) : [];
 
@@ -680,7 +781,29 @@ case 'multiple-choice':
           {/* Action buttons */}
           <div className="absolute bottom-0 right-0 transform translate-y-1/2 px-8 flex gap-3">
             <button
-              onClick={() => setShowChatPanel(!showChatPanel)}
+              onClick={async () => {
+                try {
+                  // Check if already joined
+                  const appsRef = collection(db, 'applications');
+                  const q1 = query(appsRef, where('student_id', '==', auth.currentUser.uid), where('jobId', '==', selectedJob.id));
+                  const snap = await getDocs(q1);
+                  const alreadyJoined = !snap.empty && (snap.docs[0].data().hasJoinedChat === true);
+                  if (!alreadyJoined) {
+                    const confirmJoin = window.confirm('Join discussion for this job? You will start receiving chat notifications.');
+                    if (!confirmJoin) return;
+                    // Mark joined
+                    const applicationDoc = snap.docs[0];
+                    await updateDoc(doc(db, 'applications', applicationDoc.id), {
+                      hasJoinedChat: true,
+                      lastChatActivity: serverTimestamp()
+                    });
+                    toast.success("You've joined the discussion!");
+                  }
+                } catch (e) {
+                  console.error('Join discussion check failed:', e);
+                }
+                setShowChatPanel(true);
+              }}
               className="flex items-center gap-2 px-4 py-3 bg-white text-blue-700 rounded-lg hover:bg-gray-100 transition-colors shadow-md"
             >
               <MessageSquare size={18} />
@@ -697,14 +820,14 @@ case 'multiple-choice':
               </button>
             )}
             
-            {!isApplied && isEligible && (
+            {!isApplied && isEligible && !isWithdrawn && (
               <button
                 onClick={() => {
                   if (areAllMandatoryLinksVisited()) {
                     if (selectedJob?.screeningQuestions?.length > 0) {
                       setActiveTab('apply');
                     } else {
-                      handleApply(selectedJob.id);
+                      handleApply();
                     }
                   }
                 }}
@@ -720,13 +843,25 @@ case 'multiple-choice':
               </button>
             )}
             
-            {isApplied && (
+            {isApplied && !isWithdrawn && (
               <button
                 disabled
                 className="flex items-center gap-2 px-4 py-3 bg-green-100 text-green-800 rounded-lg cursor-not-allowed shadow-md"
               >
                 <CheckCircle size={18} />
                 Applied
+              </button>
+            )}
+
+            {isWithdrawn && (
+              <button
+                disabled
+                className="flex items-center gap-2 px-4 py-3 bg-red-100 text-red-800 rounded-lg cursor-not-allowed shadow-md"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+                Withdrawn
               </button>
             )}
           </div>
@@ -771,7 +906,7 @@ case 'multiple-choice':
                 Description
               </button>
             )}
-            {selectedJob.screeningQuestions?.length > 0 && !isApplied && (
+            {selectedJob.screeningQuestions?.length > 0 && !isApplied && !isWithdrawn && (
               <button
                 onClick={() => setActiveTab('apply')}
                 className={`py-4 px-1 border-b-2 font-medium text-sm ${activeTab === 'apply' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}
@@ -909,6 +1044,32 @@ case 'multiple-choice':
       label="PPO Opportunity"
       value={selectedJob.ppoPportunity ? 'Yes' : 'No'}
     />
+
+    {/* Bond Information Card */}
+    {selectedJob.bondRequired && (
+      <JobInfoCard
+        iconBg="bg-orange-100"
+        iconColor="text-orange-600"
+        icon={<ShieldCheck size={12} />}
+        label="Bond Required"
+        value="Yes - Review Terms"
+      />
+    )}
+
+    {/* External Links Information Card */}
+    {selectedJob.externalLinks && selectedJob.externalLinks.length > 0 && (
+      <JobInfoCard
+        iconBg="bg-blue-100"
+        iconColor="text-blue-600"
+        icon={<LinkIcon size={12} />}
+        label="External Resources"
+        value={`${selectedJob.externalLinks.length} link${selectedJob.externalLinks.length > 1 ? 's' : ''}${
+          selectedJob.externalLinks.filter(link => link.mandatoryBeforeApply).length > 0 
+            ? ` (${selectedJob.externalLinks.filter(link => link.mandatoryBeforeApply).length} mandatory)`
+            : ''
+        }`}
+      />
+    )}
   </div>
 </div>
 
@@ -1081,7 +1242,7 @@ case 'multiple-choice':
               <h3 className="text-xl font-semibold mb-4 text-gray-800">Job Description</h3>
               <div
                 className="prose max-w-none"
-                dangerouslySetInnerHTML={{ __html: selectedJob.description }}
+                dangerouslySetInnerHTML={{ __html: require('../../utils/sanitize').sanitizeHtml(selectedJob.description) }}
               />
 
               {selectedJob.instructions && (
@@ -1089,8 +1250,47 @@ case 'multiple-choice':
                   <h4 className="text-lg font-semibold mb-3 text-gray-800">Additional Instructions</h4>
                   <div
                     className="prose max-w-none"
-                    dangerouslySetInnerHTML={{ __html: selectedJob.instructions }}
+                    dangerouslySetInnerHTML={{ __html: require('../../utils/sanitize').sanitizeHtml(selectedJob.instructions) }}
                   />
+                </div>
+              )}
+
+              {/* Bond Details Section */}
+              {selectedJob.bondRequired && selectedJob.bondDetails && (
+                <div className="mt-8 pt-6 border-t border-gray-200">
+                  <div className="flex items-center mb-3">
+                    <ShieldCheck size={24} className="text-orange-600 mr-3" />
+                    <h4 className="text-lg font-semibold text-orange-800">Bond Requirements</h4>
+                  </div>
+                  <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
+                    <p className="text-orange-800 font-medium mb-2">⚠️ This position requires a bond agreement</p>
+                    <div className="bg-white p-4 rounded-lg border border-orange-200">
+                      <div
+                        className="prose max-w-none text-orange-900"
+                        dangerouslySetInnerHTML={{ __html: require('../../utils/sanitize').sanitizeHtml(selectedJob.bondDetails) }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Withdrawn Application Notice */}
+              {isWithdrawn && (
+                <div className="mt-8 pt-6 border-t border-gray-200">
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                    <div className="flex items-center mb-3">
+                      <svg className="w-6 h-6 text-red-600 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                      <h4 className="text-lg font-semibold text-red-800">Application Withdrawn</h4>
+                    </div>
+                    <p className="text-red-700 mb-2">
+                      You have withdrawn your application for this position. Unfortunately, you cannot reapply to this job.
+                    </p>
+                    <p className="text-red-600 text-sm">
+                      If you believe this was done in error, please contact the placement office.
+                    </p>
+                  </div>
                 </div>
               )}
             </div>
@@ -1098,7 +1298,7 @@ case 'multiple-choice':
 
           
           {/* Apply Tab - Screening Questions */}
-          {activeTab === 'apply' && selectedJob.screeningQuestions && selectedJob.screeningQuestions.length > 0 && !isApplied && (
+          {activeTab === 'apply' && selectedJob.screeningQuestions && selectedJob.screeningQuestions.length > 0 && !isApplied && !isWithdrawn && (
             <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
               <h3 className="text-xl font-semibold mb-6 text-gray-800">Screening Questions</h3>
               <p className="text-gray-600 mb-6">Please answer all questions below to complete your application.</p>
@@ -1118,17 +1318,166 @@ case 'multiple-choice':
                     </div>
                   </div>
                 ))}
+
+                {/* Bond Agreement Section */}
+                {selectedJob.bondRequired && selectedJob.bondDetails && (
+                  <div className="bg-orange-50 p-5 rounded-lg border border-orange-200">
+                    <div className="flex items-start mb-4">
+                      <div className="w-8 h-8 rounded-full bg-orange-100 text-orange-800 flex items-center justify-center font-medium mr-3">
+                        <ShieldCheck size={20} />
+                      </div>
+                      <div className="flex-1">
+                        <h4 className="font-medium text-orange-800 mb-2">Bond Agreement</h4>
+                        <div className="bg-white p-4 rounded-lg border border-orange-200 mb-4">
+                          <div
+                            className="prose max-w-none text-orange-900 text-sm"
+                            dangerouslySetInnerHTML={{ __html: require('../../utils/sanitize').sanitizeHtml(selectedJob.bondDetails) }}
+                          />
+                        </div>
+                        <label className="flex items-start space-x-3 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={bondAgreed}
+                            onChange={(e) => setBondAgreed(e.target.checked)}
+                            className="mt-1 h-4 w-4 text-orange-600 focus:ring-orange-500 border-orange-300 rounded"
+                          />
+                          <span className="text-orange-800 text-sm">
+                            I have read and agree to the bond terms for this job. I understand that this is a legally binding agreement.
+                          </span>
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* External Links Section */}
+                {selectedJob.externalLinks && selectedJob.externalLinks.length > 0 && (
+                  <div className="bg-blue-50 p-5 rounded-lg border border-blue-200">
+                    <div className="flex items-start mb-4">
+                      <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-800 flex items-center justify-center font-medium mr-3">
+                        <LinkIcon size={20} />
+                      </div>
+                      <div className="flex-1">
+                        <h4 className="font-medium text-blue-800 mb-2">External Resources</h4>
+                        <p className="text-blue-700 text-sm mb-4">
+                          Please review the following external resources before applying. 
+                          {selectedJob.externalLinks.filter(link => link.mandatoryBeforeApply).length > 0 && (
+                            <span className="font-medium"> Some links are mandatory and must be visited before you can apply.</span>
+                          )}
+                        </p>
+                        <div className="space-y-3">
+                          {selectedJob.externalLinks.map((link, index) => (
+                            <div key={index} className={`p-3 border rounded-lg ${
+                              link.mandatoryBeforeApply 
+                                ? (linkVisited[link.url] ? 'border-green-300 bg-green-50' : 'border-blue-300 bg-blue-50')
+                                : 'border-gray-200 bg-white'
+                            }`}>
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="font-medium text-gray-800">{link.label}</span>
+                                {link.mandatoryBeforeApply && (
+                                  <span className={`text-xs font-medium px-2 py-1 rounded-full ${
+                                    linkVisited[link.url] 
+                                      ? 'bg-green-100 text-green-800' 
+                                      : 'bg-blue-100 text-blue-800'
+                                  }`}>
+                                    {linkVisited[link.url] ? '✓ Visited' : 'Mandatory'}
+                                  </span>
+                                )}
+                              </div>
+                              <a
+                                href={link.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={() => handleLinkClick(link.url, link.mandatoryBeforeApply)}
+                                className="text-blue-600 hover:underline text-sm flex items-center"
+                              >
+                                <LinkIcon size={14} className="mr-2" />
+                                {link.url}
+                              </a>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
               
-              <div className="mt-8 flex justify-end">
+              {/* Validation Status */}
+              <div className="mt-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                <h4 className="font-medium text-gray-800 mb-3">Application Requirements Status</h4>
+                <div className="space-y-2">
+                  {(() => {
+                    const status = getValidationStatus();
+                    return Object.entries(status).map(([key, value]) => {
+                      if (!value.required) return null;
+                      return (
+                        <div key={key} className="flex items-center justify-between">
+                          <span className="text-sm text-gray-600 capitalize">
+                            {key === 'bondAgreement' ? 'Bond Agreement' : 
+                             key === 'externalLinks' ? 'External Links' : 'Screening Questions'}
+                          </span>
+                          <span className={`text-sm font-medium px-2 py-1 rounded-full ${
+                            value.completed 
+                              ? 'bg-green-100 text-green-800' 
+                              : 'bg-yellow-100 text-yellow-800'
+                          }`}>
+                            {value.completed ? '✓ Complete' : '⏳ Pending'}
+                          </span>
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+              </div>
+              
+              <div className="mt-6 flex justify-end">
                 <button
-                  onClick={() => handleApply(selectedJob.id)}
-                  className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium flex items-center"
+                  onClick={() => handleApply()}
+                  disabled={!isFormValid() || applying}
+                  className={`px-6 py-3 rounded-lg transition-colors font-medium flex items-center ${
+                    !isFormValid() || applying
+                      ? 'bg-gray-400 text-gray-600 cursor-not-allowed'
+                      : 'bg-blue-600 text-white hover:bg-blue-700'
+                  }`}
                 >
                   <Send size={18} className="mr-2" />
-                  Submit Application
+                  {applying ? 'Submitting...' : (
+                    !isFormValid() 
+                      ? (() => {
+                          if (selectedJob?.bondRequired && !bondAgreed) {
+                            return 'Agree to Bond Terms First';
+                          }
+                          const mandatoryLinks = (selectedJob?.externalLinks || []).filter(link => link.mandatoryBeforeApply);
+                          const unvisitedMandatoryLinks = mandatoryLinks.filter(link => !linkVisited[link.url]);
+                          if (unvisitedMandatoryLinks.length > 0) {
+                            return `Visit ${unvisitedMandatoryLinks.length} Required Link${unvisitedMandatoryLinks.length > 1 ? 's' : ''}`;
+                          }
+                          return 'Complete All Requirements';
+                        })()
+                      : 'Submit Application'
+                  )}
                 </button>
               </div>
+              
+              {!isFormValid() && (
+                <div className="mt-4 p-3 bg-orange-50 border border-orange-200 rounded-lg">
+                  <p className="text-orange-700 text-sm flex items-center">
+                    <ShieldCheck size={16} className="mr-2" />
+                    {(() => {
+                      if (selectedJob?.bondRequired && !bondAgreed) {
+                        return 'You must agree to the bond terms above before submitting your application.';
+                      }
+                      const mandatoryLinks = (selectedJob?.externalLinks || []).filter(link => link.mandatoryBeforeApply);
+                      const unvisitedMandatoryLinks = mandatoryLinks.filter(link => !linkVisited[link.url]);
+                      if (unvisitedMandatoryLinks.length > 0) {
+                        return `You must visit ${unvisitedMandatoryLinks.length} required external link${unvisitedMandatoryLinks.length > 1 ? 's' : ''} before submitting your application.`;
+                      }
+                      return 'Please complete all requirements before submitting your application.';
+                    })()}
+                  </p>
+                </div>
+              )}
             </div>
           )}
           
@@ -1169,6 +1518,16 @@ case 'multiple-choice':
                   </svg>
                   Application Status: <span className="font-medium ml-1">{applicationStatuses[selectedJob.id] || 'Pending'}</span>
                 </p>
+                {isWithdrawn && (
+                  <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg">
+                    <p className="text-red-800 text-sm flex items-center">
+                      <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                      This application has been withdrawn. You cannot reapply to this position.
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
           )}

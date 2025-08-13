@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { collection, query, where, getDocs, doc, getDoc, updateDoc, writeBatch, serverTimestamp, deleteDoc } from 'firebase/firestore';
+import { collection, query, where, getDocs, doc, getDoc, updateDoc, writeBatch, serverTimestamp, deleteDoc, addDoc } from 'firebase/firestore';
 import { db, auth } from '../../firebase';
 import { ToastContainer, toast } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
-import { createStatusUpdateNotification, createNotification } from '../../utils/notificationHelpers';
+import { createStatusUpdateNotification, createNotification, createSystemAlertNotification } from '../../utils/notificationHelpers';
 import LoadingSpinner from '../ui/LoadingSpinner';
 import Loader from '../../loading';
 
@@ -16,7 +16,10 @@ const STATUS_COLORS = {
   interview_scheduled: 'bg-purple-100 text-purple-800',
   selected: 'bg-emerald-100 text-emerald-800',
   rejected: 'bg-red-100 text-red-800',
-  withdrawn: 'bg-red-100 text-red-800'
+  withdrawn: 'bg-red-100 text-red-800',
+  offer_accepted: 'bg-green-100 text-green-800',
+  offer_rejected: 'bg-red-100 text-red-800',
+  placed: 'bg-emerald-100 text-emerald-800'
 };
 
 const STATUS_LABELS = {
@@ -28,7 +31,10 @@ const STATUS_LABELS = {
   interview_scheduled: '📅 Interview Scheduled',
   selected: '🎉 Selected',
   rejected: '⚠️ Rejected',
-  withdrawn: '🚫 Withdrawn'
+  withdrawn: '🚫 Withdrawn',
+  offer_accepted: '✅ Offer Accepted',
+  offer_rejected: '❌ Offer Rejected',
+  placed: '🎉 Placed'
 };
 
 const Applications = () => {
@@ -36,7 +42,10 @@ const Applications = () => {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('all');
   const [sortBy, setSortBy] = useState('newest');
+  const [searchTerm, setSearchTerm] = useState('');
   const [isPlaced, setIsPlaced] = useState(false);
+  const [showOfferDecision, setShowOfferDecision] = useState({});
+  const [offerDecisionLoading, setOfferDecisionLoading] = useState({});
 
   useEffect(() => {
     fetchApplications();
@@ -283,62 +292,168 @@ const Applications = () => {
     )) {
       return;
     }
-    
-    try {
-      const user = auth.currentUser;
-      if (user) {
-        const application = applications.find(app => app.id === applicationId);
-        if (!application) {
-          toast.error("Application not found");
-          return;
-        }
 
-        const applicationRef = doc(db, 'applications', applicationId);
-        
-        // Update the application status to 'withdrawn'
+    try {
+      const application = applications.find(app => app.id === applicationId);
+      if (!application) {
+        toast.error('Application not found');
+        return;
+      }
+
+      // Update application status
+      const applicationRef = doc(db, 'applications', applicationId);
+      await updateDoc(applicationRef, {
+        status: 'withdrawn',
+        withdrawnAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+
+      // Send notification to student
+      try {
+        await createStatusUpdateNotification(auth.currentUser.uid, {
+          job: { position: application.job?.position || 'Unknown Position' },
+          status: 'withdrawn'
+        });
+      } catch (error) {
+        console.error('Error sending withdrawal notification:', error);
+      }
+
+      // Send admin notification
+      try {
+        await createSystemAlertNotification(
+          'Application Withdrawn',
+          `Student ${auth.currentUser.displayName || 'Unknown'} has withdrawn their application for ${application.job?.position || 'position'} at ${application.job?.company || 'company'}.`,
+          `/admin/job-applications/${application.job_id || 'unknown'}`
+        );
+      } catch (error) {
+        console.error('Error sending admin notification:', error);
+      }
+
+      toast.success('Application withdrawn successfully');
+      fetchApplications();
+    } catch (error) {
+      console.error('Error withdrawing application:', error);
+      toast.error('Failed to withdraw application');
+    }
+  };
+
+  const handleOfferDecision = async (applicationId, decision) => {
+    try {
+      const application = applications.find(app => app.id === applicationId);
+      if (!application) {
+        toast.error('Application not found');
+        return;
+      }
+
+      const applicationRef = doc(db, 'applications', applicationId);
+      const studentRef = doc(db, 'students', auth.currentUser.uid);
+      
+      if (decision === 'accept') {
+        // Accept offer
         await updateDoc(applicationRef, {
-          status: 'withdrawn',
-          withdrawn_at: serverTimestamp(),
-          'rounds.pending': 'withdrawn' // Or the appropriate current round
+          status: 'offer_accepted',
+          offerDecision: 'Accepted',
+          decisionDate: serverTimestamp(),
+          updatedAt: serverTimestamp()
         });
 
-        // Update job's applicants and filledPositions
-        const batch = writeBatch(db);
-        const jobRef = doc(db, 'jobs', application.job_id || application.jobId);
-        const jobDoc = await getDoc(jobRef);
-        
-        if (jobDoc.exists()) {
-          const jobData = jobDoc.data();
-          if (jobData.capacity && jobData.filledPositions) {
-            batch.update(jobRef, {
-              filledPositions: Math.max(0, jobData.filledPositions - 1)
-            });
-          }
-          
-          if (jobData.applicants && Array.isArray(jobData.applicants)) {
-            const updatedApplicants = jobData.applicants.filter(
-              applicant => applicant.id !== user.uid
-            );
-            batch.update(jobRef, {
-              applicants: updatedApplicants
-            });
-          }
+        // Update student placement status
+        await updateDoc(studentRef, {
+          placementStatus: 'placed',
+          placedCompany: application.job.company,
+          placedJobTitle: application.job.position,
+          placedPackage: application.job.ctc || application.job.salary,
+          placedLocation: application.job.location,
+          placedAt: serverTimestamp(),
+          offerDecision: 'Accepted',
+          decisionDate: serverTimestamp()
+        });
+
+        // Add to placed students collection
+        await addDoc(collection(db, 'placed_students'), {
+          studentId: auth.currentUser.uid,
+          jobId: application.job_id,
+          applicationId: applicationId,
+          companyName: application.job.company,
+          jobTitle: application.job.position,
+          package: application.job.ctc || application.job.salary,
+          location: application.job.location,
+          acceptedAt: serverTimestamp(),
+          status: 'active'
+        });
+
+        // Send notification to student
+        try {
+          await createStatusUpdateNotification(auth.currentUser.uid, {
+            job: { position: application.job.position },
+            status: 'offer_accepted'
+          });
+        } catch (error) {
+          console.error('Error sending offer acceptance notification:', error);
         }
-        
-        await batch.commit();
-        
-        // Update local state
-        setApplications(applications.map(app => 
-          app.id === applicationId 
-            ? { ...app, status: 'withdrawn', rounds: { ...app.rounds, [app.currentRound]: 'withdrawn' } }
-            : app
-        ));
-        
-        toast.success("Application withdrawn successfully!");
+
+        // Send admin notification
+        try {
+          await createSystemAlertNotification(
+            'Offer Accepted',
+            `Student ${auth.currentUser.displayName || 'Unknown'} has accepted the offer for ${application.job.position} at ${application.job.company}.`,
+            `/admin/job-applications/${application.job_id || 'unknown'}`
+          );
+        } catch (error) {
+          console.error('Error sending admin notification:', error);
+        }
+
+        toast.success("Offer accepted successfully! Congratulations on your placement!");
+      } else {
+        // Reject offer
+        await updateDoc(applicationRef, {
+          status: 'offer_rejected',
+          offerDecision: 'Rejected',
+          decisionDate: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        });
+
+        // Update student rejection count
+        await updateDoc(studentRef, {
+          rejectedOffersCount: (application.rejectedOffersCount || 0) + 1,
+          lastOfferRejection: serverTimestamp()
+        });
+
+        // Send notification to student
+        try {
+          await createStatusUpdateNotification(auth.currentUser.uid, {
+            job: { position: application.job.position },
+            status: 'offer_rejected'
+          });
+        } catch (error) {
+          console.error('Error sending offer rejection notification:', error);
+        }
+
+        // Send admin notification
+        try {
+          await createSystemAlertNotification(
+            'Offer Rejected',
+            `Student ${auth.currentUser.displayName || 'Unknown'} has rejected the offer for ${application.job.position} at ${application.job.company}.`,
+            `/admin/job-applications/${application.job_id || 'unknown'}`
+          );
+        } catch (error) {
+          console.error('Error sending admin notification:', error);
+        }
+
+        toast.success("Offer rejected successfully. You may continue applying for other opportunities.");
       }
+
+      // Update local state
+      setApplications(prevApplications =>
+        prevApplications.map(app =>
+          app.id === applicationId
+            ? { ...app, status: decision === 'accept' ? 'offer_accepted' : 'offer_rejected' }
+            : app
+        )
+      );
     } catch (error) {
-      console.error("Error withdrawing application:", error);
-      toast.error("Error withdrawing application!");
+      console.error('Error processing offer decision:', error);
+      toast.error('Failed to process offer decision');
     }
   };
 
@@ -407,14 +522,26 @@ const Applications = () => {
             )}
 
             {/* Offer Decision Banner */}
-            {application.rounds[application.currentRound] === 'selected' && application.offerDecision === 'Accepted' && (
+            {application.status === 'offer_accepted' && (
               <div className="bg-green-100 text-green-800 p-4 rounded-lg mb-4">
-                You have accepted this offer
+                <div className="flex items-center">
+                  <span className="text-lg mr-2">🎉</span>
+                  <div>
+                    <p className="font-medium">Offer Accepted!</p>
+                    <p className="text-sm">You have successfully accepted this offer. Congratulations on your placement!</p>
+                  </div>
+                </div>
               </div>
             )}
-            {application.rounds[application.currentRound] === 'selected' && application.offerDecision === 'Rejected' && (
+            {application.status === 'offer_rejected' && (
               <div className="bg-red-100 text-red-800 p-4 rounded-lg mb-4">
-                You have rejected this offer
+                <div className="flex items-center">
+                  <span className="text-lg mr-2">❌</span>
+                  <div>
+                    <p className="font-medium">Offer Rejected</p>
+                    <p className="text-sm">You have rejected this offer. You may continue applying for other opportunities.</p>
+                  </div>
+                </div>
               </div>
             )}
 
@@ -424,24 +551,24 @@ const Applications = () => {
                 <h3 className="text-xl font-medium">{application.job.position}</h3>
                 <p className="text-gray-600">{application.job.company}</p>
               </div>
-              <div className={`px-3 py-1 rounded-full text-sm ${STATUS_COLORS[application.rounds[application.currentRound]]}`}>
-                {STATUS_LABELS[application.rounds[application.currentRound]]}
+              <div className={`px-3 py-1 rounded-full text-sm ${STATUS_COLORS[application.status] || STATUS_COLORS[application.rounds?.[application.currentRound]] || 'bg-gray-100 text-gray-800'}`}>
+                {STATUS_LABELS[application.status] || STATUS_LABELS[application.rounds?.[application.currentRound]] || 'Unknown Status'}
               </div>
             </div>
 
             {/* Offer Decision Panel */}
-            {application.rounds[application.currentRound] === 'selected' && !application.offerDecision && (
+            {application.status === 'selected' && !application.offerDecision && (
               <div className="bg-blue-50 p-4 rounded-lg mb-4">
                 <p className="text-blue-800 mb-4">You have been selected for this role. Please confirm your decision.</p>
                 <div className="flex flex-col sm:flex-row gap-2">
                   <button 
-                    onClick={() => handleAcceptOffer(application.id)}
+                    onClick={() => handleOfferDecision(application.id, 'accept')}
                     className="w-full sm:w-auto px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700"
                   >
                     ✅ Accept Offer
                   </button>
                   <button 
-                    onClick={() => handleRejectOffer(application.id)}
+                    onClick={() => handleOfferDecision(application.id, 'reject')}
                     className="w-full sm:w-auto px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
                   >
                     ❌ Reject Offer

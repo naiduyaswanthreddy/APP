@@ -1,6 +1,7 @@
-import React, { useEffect } from "react";
+import React, { useEffect, Suspense } from "react";
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import AuthHandler from "./AuthHandler";
+import Loader from './loading';
 // Import new components
 
 
@@ -32,7 +33,11 @@ function App() {
        
         
         {/* AuthHandler for all other routes */}
-        <Route path="/*" element={<AuthHandler />} />
+        <Route path="/*" element={
+          <Suspense fallback={<div className="fixed inset-0 flex items-center justify-center"><Loader /></div>}>
+            <AuthHandler />
+          </Suspense>
+        } />
       </Routes>
     </Router>
   );

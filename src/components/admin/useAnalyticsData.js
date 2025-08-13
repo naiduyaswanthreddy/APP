@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { db } from '../../firebase'; // Assuming firebase.js is in the parent directory
 import { collection, getDocs, query, where } from 'firebase/firestore';
+import { parseCTCToLPA, summarizeCTCs } from '../../utils/ctc';
 
 // Accept filters as an argument
 const useAnalyticsData = (filters) => {
@@ -14,6 +15,8 @@ const useAnalyticsData = (filters) => {
     highestCTC: 0,
     averageCTC: 0,
     lowestCTC: 0,
+    medianCTC: 0,
+    p90CTC: 0,
     placementPercentage: 0,
     jobsSecured: 0,
     placementsSecured: 0,
@@ -70,6 +73,41 @@ const useAnalyticsData = (filters) => {
     skills: { labels: [], datasets: [] },
   });
 
+  const [ctcDistribution, setCtcDistribution] = useState({ labels: [], datasets: [] });
+
+  // --- Helpers: normalization and parsing ---
+  const normalizeStatus = (status) => (status || '').toString().trim().toLowerCase();
+
+  // Convert CTC/salary inputs to LPA (Lakhs Per Annum)
+  const parseCTCToLPA = (value) => {
+    if (value == null) return 0;
+    // If number: assume INR amount if large, otherwise already in LPA
+    if (typeof value === 'number') {
+      if (value >= 100000) return +(value / 100000).toFixed(2);
+      return +value.toFixed(2);
+    }
+    if (typeof value !== 'string') return 0;
+    let cleaned = value
+      .replace(/[,\s]/g, '')
+      .replace(/₹|rs\.?|inr/gi, '')
+      .toLowerCase();
+    // Handle explicit LPA markers
+    if (/lpa$/.test(cleaned)) {
+      const num = parseFloat(cleaned.replace(/lpa$/, ''));
+      return isNaN(num) ? 0 : +num.toFixed(2);
+    }
+    if (/lac|lakh|lakhs/.test(cleaned)) {
+      const num = parseFloat(cleaned.replace(/lac|lakh|lakhs/, ''));
+      return isNaN(num) ? 0 : +num.toFixed(2);
+    }
+    // If it looks like a yearly INR number (>= 1,00,000) convert to LPA
+    const num = parseFloat(cleaned);
+    if (isNaN(num)) return 0;
+    if (num >= 100000) return +(num / 100000).toFixed(2);
+    // Otherwise treat as LPA already
+    return +num.toFixed(2);
+  };
+
   // Utility to check if any filter is active
   const hasActiveFilters = (() => {
     const { dateRange, ...rest } = filters;
@@ -100,7 +138,7 @@ const useAnalyticsData = (filters) => {
       const dateMatch = (!startDate || appTimestamp >= startDate) && (!endDate || appTimestamp <= endDate);
 
       // Application status filter
-      const statusMatch = !filters.applicationStatus || app.status === filters.applicationStatus;
+      const statusMatch = !filters.applicationStatus || normalizeStatus(app.status) === normalizeStatus(filters.applicationStatus);
 
       // Company filter (robust: check company, companyName, job_company)
       const companyMatch = !filters.company ||
@@ -180,6 +218,10 @@ const useAnalyticsData = (filters) => {
         const allApplications = applicationsSnapshot.docs.map(doc => ({
              id: doc.id,
              ...doc.data(),
+             student_id: doc.data().student_id || doc.data().studentId,
+             job_id: doc.data().job_id || doc.data().jobId,
+             companyName: doc.data().companyName || doc.data().company,
+             status: normalizeStatus(doc.data().status),
              timestamp: doc.data().timestamp?.toDate() || new Date() // Ensure timestamp is Date object
         }));
         // Apply application filters
@@ -188,10 +230,18 @@ const useAnalyticsData = (filters) => {
 
         // Filter placed students from the *filtered* student list
         // This requires knowing which of the filtered students are placed based on filtered applications
-        const placedStudentIds = new Set(filteredApplications.filter(app => app.status === 'selected').map(app => app.student_id));
+        const placedStudentIds = new Set(
+          filteredApplications
+            .filter(app => ['selected', 'accepted'].includes(normalizeStatus(app.status)))
+            .map(app => app.student_id)
+        );
         const placedStudents = filteredStudents.filter(student => placedStudentIds.has(student.id)).length;
 
-        const jobsSecured = new Set(filteredApplications.filter(app => app.status === 'selected').map(app => app.job_id)).size;
+        const jobsSecured = new Set(
+          filteredApplications
+            .filter(app => ['selected', 'accepted'].includes(normalizeStatus(app.status)))
+            .map(app => app.job_id)
+        ).size;
         const placementsSecured = placedStudents;
 
         const placementPercentage = registeredStudents > 0
@@ -202,32 +252,49 @@ const useAnalyticsData = (filters) => {
         const notPlacedStudents = registeredStudents - placedStudents;
         const totalOffers = placedStudents; // Assuming each placed student received an offer
         
-        // Calculate CTC metrics from job postings for placed students
-        const selectedApplications = filteredApplications.filter(app => app.status === 'selected');
-        
-        // Get CTC values from job postings for placed students
+        // Calculate CTC metrics for placed students (selected or accepted)
+        const selectedApplications = filteredApplications.filter(app => ['selected', 'accepted'].includes(normalizeStatus(app.status)));
+        const jobById = new Map(allJobs.map(j => [j.id, j]));
         const ctcValues = [];
         for (const app of selectedApplications) {
-          // Find the corresponding job posting
-          const job = filteredJobs.find(job => job.id === app.job_id);
-          if (job && job.ctc) {
-            // Extract numeric value from CTC string (e.g., "₹10 LPA" -> 10)
-            const ctcMatch = job.ctc.match(/(\d+(?:\.\d+)?)/);
-            if (ctcMatch) {
-              const ctcValue = parseFloat(ctcMatch[1]);
-              if (ctcValue > 0) {
-                ctcValues.push(ctcValue);
-              }
-            }
-          }
+          const job = jobById.get(app.job_id);
+          const fromApp = parseCTCToLPA(app.offerCTC || app.package || app.ctc);
+          const fromJob = job ? parseCTCToLPA(job.ctc || job.salary) : 0;
+          const ctcLPA = fromApp || fromJob;
+          if (ctcLPA > 0) ctcValues.push(ctcLPA);
         }
         
-        const highestCTC = ctcValues.length > 0 ? Math.max(...ctcValues) : 0;
-        const lowestCTC = ctcValues.length > 0 ? Math.min(...ctcValues) : 0;
-        const averageCTC = ctcValues.length > 0 ? (ctcValues.reduce((sum, ctc) => sum + ctc, 0) / ctcValues.length).toFixed(2) : 0;
+        const highestCTC = ctcValues.length > 0 ? +Math.max(...ctcValues).toFixed(2) : 0;
+        const lowestCTC = ctcValues.length > 0 ? +Math.min(...ctcValues).toFixed(2) : 0;
+        const averageCTC = ctcValues.length > 0 ? +(
+          ctcValues.reduce((sum, ctc) => sum + ctc, 0) / ctcValues.length
+        ).toFixed(2) : 0;
+        const { p50, p90 } = summarizeCTCs(ctcValues);
+
+        // Build CTC distribution (bins in LPA)
+        const bins = [0, 3, 6, 9, 12, Infinity];
+        const labels = ['0-3', '3-6', '6-9', '9-12', '12+'];
+        const counts = [0, 0, 0, 0, 0];
+        ctcValues.forEach(v => {
+          if (v < 3) counts[0]++;
+          else if (v < 6) counts[1]++;
+          else if (v < 9) counts[2]++;
+          else if (v < 12) counts[3]++;
+          else counts[4]++;
+        });
+        setCtcDistribution({
+          labels,
+          datasets: [{
+            label: 'Students by CTC (LPA)',
+            data: counts,
+            backgroundColor: 'rgba(99, 102, 241, 0.6)'
+          }]
+        });
         
-        // Count unique companies that participated
-        const companiesParticipated = companies.size;
+        // Count unique companies that participated (from applications considered)
+        const companiesParticipated = new Set(
+          selectedApplications.map(app => app.companyName).filter(Boolean)
+        ).size || companies.size;
 
         setSummaryData({
           jobOpenings: filteredJobs.length,
@@ -239,22 +306,14 @@ const useAnalyticsData = (filters) => {
           highestCTC: highestCTC,
           averageCTC: averageCTC,
           lowestCTC: lowestCTC,
+          medianCTC: p50,
+          p90CTC: p90,
           placementPercentage,
           jobsSecured,
           placementsSecured,
           companiesParticipated,
         });
-
-        setCompanyData({
-          labels: Array.from(new Set(filteredJobs.map(job => job.company))),
-          datasets: [{
-            data: [], // keep as is or update as needed
-            backgroundColor: [],
-            borderColor: [],
-            borderWidth: 1,
-            label: 'Number of Hires'
-          }]
-        });
+        // Do not override companyData here; it is computed in a dedicated effect below
 
       } catch (error) {
         console.error('Error fetching analytics data:', error);
@@ -289,7 +348,11 @@ const useAnalyticsData = (filters) => {
          const filteredApplications = applyApplicationFilters(allApplications, filters);
 
          // Map filtered applications back to filtered students to check placement status
-         const placedStudentIds = new Set(filteredApplications.filter(app => app.status === 'selected').map(app => app.student_id));
+         const placedStudentIds = new Set(
+           filteredApplications
+             .filter(app => ['selected', 'accepted'].includes(normalizeStatus(app.status)))
+             .map(app => app.student_id)
+         );
 
 
         const branchCounts = {};
@@ -347,7 +410,7 @@ const useAnalyticsData = (filters) => {
         const companyHires = {};
 
         filteredApplications.forEach((application) => {
-          if (application.companyName && application.status === 'selected') {
+          if (application.companyName && ['selected', 'accepted'].includes(normalizeStatus(application.status))) {
             companyHires[application.companyName] = (companyHires[application.companyName] || 0) + 1;
           }
         });
@@ -440,7 +503,7 @@ const useAnalyticsData = (filters) => {
             ...data,
             id: doc.id,
             companyName: data.companyName || data.company,
-            status: data.status || 'pending',
+            status: normalizeStatus(data.status || 'pending'),
             timestamp: data.timestamp?.toDate() || new Date() // Ensure timestamp is Date object
           };
         });
@@ -489,11 +552,15 @@ const useAnalyticsData = (filters) => {
           const applied = companyApplications.length;
           const eligible = eligibleStudents.length;
           const notApplied = Math.max(0, eligible - applied);
-          // Count unique students with at least one 'selected' application for this company
-          const selectedStudentIds = new Set(companyApplications.filter(app => app.status === 'selected').map(app => app.student_id));
+          // Count unique students with at least one 'selected'/'accepted' application for this company
+          const selectedStudentIds = new Set(
+            companyApplications
+              .filter(app => ['selected', 'accepted'].includes(normalizeStatus(app.status)))
+              .map(app => app.student_id)
+          );
           console.log(`Company: ${company}, Selected Student IDs:`, Array.from(selectedStudentIds));
           const selected = selectedStudentIds.size;
-          const rejected = companyApplications.filter(app => app.status === 'rejected').length;
+          const rejected = companyApplications.filter(app => normalizeStatus(app.status) === 'rejected').length;
 
           return {
             company,
@@ -632,7 +699,11 @@ const useAnalyticsData = (filters) => {
         const studentIdsWithFilteredApplications = new Set(filteredApplications.map(app => app.student_id));
 
         // Get the set of student IDs who have *selected* applications *after* application filters
-        const studentIdsWithFilteredSelectedApplications = new Set(filteredApplications.filter(app => app.status === 'selected').map(app => app.student_id));
+         const studentIdsWithFilteredSelectedApplications = new Set(
+           filteredApplications
+             .filter(app => ['selected', 'accepted'].includes(normalizeStatus(app.status)))
+             .map(app => app.student_id)
+         );
 
 
         // --- Branch/Department Distribution (Applicants vs. Selected) ---
@@ -790,6 +861,7 @@ const useAnalyticsData = (filters) => {
     roundData,
     trendData,
     demographicData,
+    ctcDistribution,
   };
 };
 

@@ -1,13 +1,16 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { 
   Users, Briefcase, FileText, CheckCircle, 
   TrendingUp, Building, Clock, Download, Filter, 
   Section, UserCheck
 } from 'lucide-react';
 import { getDocs, collection } from 'firebase/firestore';
+import { logger } from '../../utils/logging';
 import { db } from '../../firebase';
 import { Chart as ChartJS, ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement, Title, PointElement, LineElement } from 'chart.js';
 import { Bar, Pie, Line } from 'react-chartjs-2';
+import LoadingSpinner from '../ui/LoadingSpinner';
 // {{ edit_1 }}
 // Import the new custom hook
 import useAnalyticsData from './useAnalyticsData';
@@ -64,6 +67,7 @@ const Analytics = () => {
     roundData,
     trendData,
     demographicData,
+    ctcDistribution,
   } = useAnalyticsData(filters); // Pass filters here
   // {{ end_edit_2 }}
 
@@ -202,10 +206,12 @@ const Analytics = () => {
     scales: {
       x: {
         stacked: true,
+        title: { display: true, text: 'Department' },
       },
       y: {
         stacked: true,
         beginAtZero: true,
+        title: { display: true, text: 'Students' },
       },
     },
   };
@@ -437,44 +443,76 @@ const Analytics = () => {
     async function fetchAvgPackageData() {
       setAvgPackageLoading(true);
       try {
+        const normalizeStatus = (s) => (s || '').toString().trim().toLowerCase();
+        const parseCTCToLPA = (value) => {
+          if (value == null) return 0;
+          if (typeof value === 'number') return value >= 100000 ? +(value / 100000).toFixed(2) : +value.toFixed(2);
+          let cleaned = String(value).replace(/[\,\s]/g, '').replace(/₹|rs\.?|inr/gi, '').toLowerCase();
+          if (/lpa$/.test(cleaned)) {
+            const num = parseFloat(cleaned.replace(/lpa$/, ''));
+            return isNaN(num) ? 0 : +num.toFixed(2);
+          }
+          if (/lac|lakh|lakhs/.test(cleaned)) {
+            const num = parseFloat(cleaned.replace(/lac|lakh|lakhs/, ''));
+            return isNaN(num) ? 0 : +num.toFixed(2);
+          }
+          const num = parseFloat(cleaned);
+          if (isNaN(num)) return 0;
+          return num >= 100000 ? +(num / 100000).toFixed(2) : +num.toFixed(2);
+        };
+
         const studentsSnapshot = await getDocs(collection(db, 'students'));
         const students = studentsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
         const applicationsSnapshot = await getDocs(collection(db, 'applications'));
-        const applications = applicationsSnapshot.docs.map(doc => doc.data());
-        // Apply batch filter only (company-wise, not department)
+        const applications = applicationsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        const jobsSnapshot = await getDocs(collection(db, 'jobs'));
+        const jobs = jobsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+        // filter batches present
         const batch = filters.batch;
-        const filteredStudents = students.filter(student => {
-          const batchMatch = !batch || student.batch === batch;
-          return batchMatch;
-        });
-        // Get all batches present in filtered students
-        const batches = Array.from(new Set(filteredStudents.map(s => s.batch).filter(Boolean))).sort();
-        // Get all companies from selected applications (companyName or company)
-        const selectedApps = applications.filter(app =>
-          app.status && app.status.toLowerCase() === 'selected' &&
-          (app.companyName || app.company)
-        );
-        console.log('Selected Apps for Avg Package:', selectedApps);
+        const batches = Array.from(new Set(students.map(s => s.batch).filter(Boolean))).sort();
 
-        const companyCounts = {};
-        selectedApps.forEach(app => {
-          const company = app.companyName || app.company;
-          const studentId = app.student_id || app.studentId;
-          if (!companyCounts[company]) companyCounts[company] = new Set();
-          companyCounts[company].add(studentId);
-        });
-        const labels = Object.keys(companyCounts);
-        const data = labels.map(company => companyCounts[company].size);
+        // compute per company per batch average
+        const jobById = new Map(jobs.map(j => [j.id, j]));
+        const perBatchCompany = new Map(); // key: `${batch}::${company}` -> { total, count }
+        applications
+          .filter(app => ['selected', 'accepted'].includes(normalizeStatus(app.status)))
+          .forEach(app => {
+            const studentId = app.student_id || app.studentId;
+            const student = students.find(s => s.id === studentId);
+            const b = student?.batch || '';
+            if (batch && b !== batch) return;
+            const company = app.companyName || app.company || jobById.get(app.job_id || app.jobId)?.company;
+            if (!company || !b) return;
+            const job = jobById.get(app.job_id || app.jobId);
+            const ctc = parseCTCToLPA(app.offerCTC || app.package || app.ctc || job?.ctc || job?.salary);
+            if (ctc <= 0) return;
+            const key = `${b}::${company}`;
+            const agg = perBatchCompany.get(key) || { total: 0, count: 0 };
+            agg.total += ctc;
+            agg.count += 1;
+            perBatchCompany.set(key, agg);
+          });
 
-        const chartData = {
-          labels,
-          datasets: [{
-            label: 'Students Recruited',
-            data,
-            backgroundColor: 'rgba(54, 162, 235, 0.7)',
-          }]
-        };
-        setAvgPackageData({ labels: batches, datasets: [chartData] });
+        const labelBatches = batch ? [batch] : batches;
+        // collect companies involved across selected batch scope
+        const companiesSet = new Set();
+        for (const key of perBatchCompany.keys()) {
+          const [, company] = key.split('::');
+          companiesSet.add(company);
+        }
+        const companies = Array.from(companiesSet).sort();
+
+        const datasets = companies.map((company, idx) => ({
+          label: company,
+          data: labelBatches.map(b => {
+            const agg = perBatchCompany.get(`${b}::${company}`);
+            return agg ? +(agg.total / agg.count).toFixed(2) : 0;
+          }),
+          backgroundColor: `rgba(${153 + (idx*37)%102}, ${102 + (idx*53)%153}, ${255 - (idx*29)%155}, 0.5)`
+        }));
+
+        setAvgPackageData({ labels: labelBatches, datasets });
       } catch (e) {
         setAvgPackageData({ labels: [], datasets: [] });
       }
@@ -494,6 +532,8 @@ const Analytics = () => {
     );
   }, [filters]);
 
+  const navigate = useNavigate();
+  
   return (
     <div className="p-6 space-y-6">
       <h1 className="text-2xl font-bold text-gray-800 mb-4">Analytics Dashboard</h1>
@@ -528,7 +568,7 @@ const Analytics = () => {
           </button>
           <button
             className="flex items-center px-4 py-2 border rounded bg-green-600 text-white shadow hover:bg-green-700"
-            onClick={() => window.location.href = '/admin/placed-students'}
+            onClick={() => navigate('/admin/placed-students')}
           >
             <UserCheck className="mr-2" size={18} />
             Placed Students
@@ -926,6 +966,8 @@ const Analytics = () => {
                       <div>Highest: ₹{summaryData.highestCTC}L</div>
                       <div>Average: ₹{summaryData.averageCTC}L</div>
                       <div>Lowest: ₹{summaryData.lowestCTC}L</div>
+                      <div>Median: ₹{summaryData.medianCTC}L</div>
+                      <div>P90: ₹{summaryData.p90CTC}L</div>
                     </div>
                   </div>
                   <TrendingUp className="text-teal-500" size={24} />
@@ -1009,7 +1051,7 @@ const Analytics = () => {
               <h2 className="text-xl font-semibold mb-4">Department Placement Trends</h2>
               <p className="text-gray-600 mb-4">Department-wise placement ratios over time (per batch/year).</p>
               {deptPlacementLoading ? (
-                <div>Loading...</div>
+                <div className="flex items-center justify-center h-72"><LoadingSpinner /></div>
               ) : deptPlacementTrends.labels.length === 0 ? (
                 <div>No data available.</div>
               ) : (
@@ -1036,8 +1078,8 @@ const Analytics = () => {
             <div className="bg-white p-6 rounded shadow flex-1">
               <h2 className="text-xl font-semibold mb-4">Average Package Analytics</h2>
               <p className="text-gray-600 mb-4">Average package offered by each company per year (batch).</p>
-              {avgPackageLoading ? (
-                <div>Loading...</div>
+                {avgPackageLoading ? (
+                <div className="flex items-center justify-center h-72"><LoadingSpinner /></div>
               ) : avgPackageData.labels.length === 0 ? (
                 <div>No data available.</div>
               ) : (
@@ -1046,8 +1088,11 @@ const Analytics = () => {
                   <Bar
                     options={{
                       responsive: true,
-                      plugins: { legend: { position: 'top', labels: { filter: (item) => true } }, title: { display: false } },
-                      scales: { y: { beginAtZero: true, title: { display: true, text: 'Average Package' } } },
+                        plugins: { legend: { position: 'top', labels: { filter: (item) => true } }, title: { display: false } },
+                        scales: {
+                          x: { title: { display: true, text: 'Batch' } },
+                          y: { beginAtZero: true, title: { display: true, text: 'Average Package (LPA)' } }
+                        },
                     }}
                     data={{
                       labels: avgPackageData.labels,
@@ -1114,9 +1159,27 @@ const Analytics = () => {
             </div>
           </section>
 
-         
-          {/* Demographic and Skill Breakdowns */}
-          
+          {/* CTC Distribution */}
+          <section className="bg-white p-6 rounded-lg shadow-sm border border-gray-200 mt-6">
+            <h3 className="text-lg font-semibold mb-4">💰 CTC Distribution (LPA)</h3>
+            <div className="h-64">
+              {ctcDistribution.labels.length > 0 ? (
+                <Bar
+                  options={{
+                    responsive: true,
+                    plugins: { legend: { position: 'top' }, title: { display: false } },
+                    scales: {
+                      x: { title: { display: true, text: 'LPA Range' } },
+                      y: { beginAtZero: true, title: { display: true, text: 'Students' } },
+                    },
+                  }}
+                  data={ctcDistribution}
+                />
+              ) : (
+                <p className="text-gray-500">No CTC distribution data available.</p>
+              )}
+            </div>
+          </section>
         </section>
       )}
 

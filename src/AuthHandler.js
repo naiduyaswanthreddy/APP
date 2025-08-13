@@ -7,6 +7,7 @@ import AdminAnalytics from "./components/admin/Analytics";
 
 // Then Firebase imports
 import { auth } from "./firebase";
+import { onAuthStateChanged, getIdTokenResult } from 'firebase/auth';
 
 // Then page components
 import Login from "./Login";
@@ -22,6 +23,7 @@ import StudentGallery from "./components/student/Gallery";
 import StudentApplications from "./components/student/Applications";
 import JobCards from "./components/student/JobCards";
 import JobDetails from "./components/student/JobDetails";
+import MyDiscussions from "./components/student/MyDiscussions";
 
 // Admin Components
 import AdminResources from "./components/admin/Resources";
@@ -54,6 +56,7 @@ import StudentCalendar from "./components/student/Calendar";
 
 import AdminCalendar from "./components/admin/Calendar";
 import PlacedStudents from './components/admin/PlacedStudents'; // Import PlacedStudents
+import ActivityLogs from './components/admin/ActivityLogs';
 
 
 function AuthHandler() {
@@ -63,22 +66,28 @@ function AuthHandler() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged(async (user) => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (user) {
-        // Get role from localStorage
-        const storedRole = localStorage.getItem("userRole");
-        
-        if (storedRole) {
-          setUser(user);
-          setRole(storedRole);
-          
-          // Only navigate if we're not already on the correct path
-          const currentPath = window.location.pathname;
-          const expectedPath = `/${storedRole}`;
-          
-          if (!currentPath.startsWith(expectedPath)) {
-            navigate(expectedPath, { replace: true });
+        try {
+          const token = await getIdTokenResult(user, true);
+          const claimRole = token.claims.role || token.claims.userRole || localStorage.getItem('userRole');
+          if (claimRole) {
+            setUser(user);
+            setRole(claimRole);
+            const currentPath = window.location.pathname;
+            const expectedPath = `/${claimRole}`;
+            if (!currentPath.startsWith(expectedPath)) {
+              navigate(expectedPath, { replace: true });
+            }
+          } else {
+            // Fallback: send to login if no role
+            setUser(user);
+            setRole(null);
+            navigate('/login', { replace: true });
           }
+        } catch (e) {
+          setUser(user);
+          setRole(null);
         }
       } else {
         // Clear everything if no user
@@ -142,6 +151,7 @@ function AuthHandler() {
         <Route path="chat" element={<AdminChat />} /> {/* Add this line */}
         <Route path="calendar" element={<AdminCalendar />} />
         <Route path="placed-students" element={<PlacedStudents />} />
+        <Route path="activity-logs" element={<ActivityLogs />} />
 
 
         
@@ -161,6 +171,7 @@ function AuthHandler() {
         <Route path="resources" element={<StudentResources />} />
         <Route path="jobpost" element={<JobCards />} />
         <Route path="job/:jobId" element={<JobDetails />} />
+        <Route path="my-discussions" element={<MyDiscussions />} />
         <Route path="applications" element={<StudentApplications />} />
         <Route path="coding" element={<StudentCoding />} />
         <Route path="profile" element={<StudentProfile />} />

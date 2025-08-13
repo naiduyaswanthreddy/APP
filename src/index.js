@@ -5,6 +5,7 @@ import './index.css';
 import App from './App';
 import reportWebVitals from './reportWebVitals';
 import { suppressResizeObserverError } from './utils/resizeObserverFix';
+import { registerSW } from './serviceWorkerRegistration';
 
 // Suppress ResizeObserver loop errors
 suppressResizeObserverError();
@@ -15,6 +16,9 @@ root.render(
     <App />
   </React.StrictMode>
 );
+
+// Register PWA service worker
+registerSW();
 
 // If you want to start measuring performance in your app, pass a function
 // to log results (for example: reportWebVitals(console.log))

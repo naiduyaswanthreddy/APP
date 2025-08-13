@@ -1,9 +1,13 @@
-import React, { useState,useRef , useEffect } from 'react';
-import { doc, updateDoc, getDoc } from 'firebase/firestore'; // Add these imports
-import { db } from '../../../firebase'; // Add this import
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import { doc, updateDoc, collection, addDoc, serverTimestamp, getDoc } from 'firebase/firestore';
+import { db } from '../../../firebase';
+import { toast } from 'react-toastify';
+import { createStatusUpdateNotification, createSystemAlertNotification } from '../../../utils/notificationHelpers';
 import { FileX } from 'lucide-react';
 import LoadingSpinner from '../../ui/LoadingSpinner';
 import NoData from '../../ui/NoData';
+import { FixedSizeList as List } from 'react-window';
+import AutoSizer from 'react-virtualized-auto-sizer';
 
 // Add this new component for truncated feedback display
 const TruncatedFeedback = ({ text }) => {
@@ -112,54 +116,309 @@ const TruncatedAnswer = ({ text }) => {
 const ApplicationsTable = ({
   loading,
   filteredApplications,
-  selectedApplications,
-  setSelectedApplications,
-  handleStudentClick,
-  statusConfig,
+  applications,
+  setApplications,
+  visibleColumns,
   openDropdownId,
   setOpenDropdownId,
   dropdownPosition,
   setDropdownPosition,
   handleStatusUpdate,
-  handleSaveFeedback, // Keep this for backward compatibility
-  setSelectedAnswers,
-  setIsAnswersModalOpen,
-  visibleColumns = [], // Add visibleColumns prop with default empty array
-  currentRound, // <-- add this
-  screeningQuestions = [] // <-- add this
+  handleSaveFeedback,
+  handleViewAnswers,
+  handleViewProfile,
+  handleViewResume,
+  statusConfig,
+  currentRound,
+  screeningQuestions = []
 }) => {
-  // Add state to manage feedback editing
+  const [selectedRows, setSelectedRows] = useState(new Set());
+  const [selectedApplications, setSelectedApplications] = useState([]);
+  const [undoStack, setUndoStack] = useState([]);
+  const [showUndoSnackbar, setShowUndoSnackbar] = useState(false);
+  const [lastAction, setLastAction] = useState(null);
   const [editingFeedbackId, setEditingFeedbackId] = useState(null);
   const [editingFeedbackValue, setEditingFeedbackValue] = useState('');
-  const [savingFeedback, setSavingFeedback] = useState(false); // Add loading state
+  const [savingFeedback, setSavingFeedback] = useState(false);
+  const listRef = useRef();
 
-  // Add useEffect to log the prop when it changes
-  useEffect(() => {
-    console.log("ApplicationsTable: handleSaveFeedback prop value:", handleSaveFeedback);
-    console.log("ApplicationsTable: handleSaveFeedback prop type:", typeof handleSaveFeedback);
-  }, [handleSaveFeedback]); // Dependency array includes handleSaveFeedback
+  // Calculate skill match percentage
+  const calculateSkillMatch = (studentSkills = [], jobSkills = []) => {
+    if (!jobSkills.length) return 0;
+    const studentSkillSet = new Set(studentSkills.map(skill => skill.toLowerCase()));
+    const jobSkillSet = new Set(jobSkills.map(skill => skill.toLowerCase()));
+    const matches = [...jobSkillSet].filter(skill => studentSkillSet.has(skill));
+    return Math.round((matches.length / jobSkillSet.size) * 100);
+  };
 
-  // Add skill matching function
-  const calculateSkillMatch = (studentSkills, jobSkills) => {
-    // Early return 0 if either array is empty or not an array
-    if (!studentSkills?.length || !jobSkills?.length) {
-      return 0;
+  // Handle student click
+  const handleStudentClick = (student) => {
+    if (handleViewProfile) {
+      handleViewProfile(student);
     }
+  };
 
-    // Normalize skills for comparison
-    const normalizedJobSkills = jobSkills.map(skill => skill.toLowerCase().trim());
-    const normalizedStudentSkills = studentSkills.map(skill => skill.toLowerCase().trim());
+  // Memoize filtered applications to prevent unnecessary re-renders
+  const memoizedApplications = useMemo(() => {
+    return filteredApplications.map((app, index) => ({
+      ...app,
+      virtualIndex: index
+    }));
+  }, [filteredApplications]);
 
-    // Count matching skills
-    const matchedSkills = normalizedJobSkills.filter(jobSkill =>
-      normalizedStudentSkills.some(studentSkill =>
-        studentSkill.includes(jobSkill) || jobSkill.includes(studentSkill)
-      )
+  // Memoize row renderer to prevent recreation on every render
+  const RowRenderer = useCallback(({ index, style }) => {
+    const application = memoizedApplications[index];
+    if (!application) return null;
+
+    return (
+      <div style={style} className="flex items-center border-b border-gray-200 hover:bg-gray-50">
+        {/* Checkbox cell */}
+        <div className="w-12 p-3">
+          <input
+            type="checkbox"
+            checked={selectedRows.has(application.id)}
+            onChange={(e) => handleRowSelection(application.id, e.target.checked)}
+            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+          />
+        </div>
+
+        {/* Dynamic cells based on visible columns */}
+        {visibleColumns.map((column) => {
+          switch (column) {
+            case 'name':
+              return (
+                <div key={column} className="flex-1 p-3">
+                  <div className="flex items-center">
+                    <div className="flex-shrink-0 h-10 w-10">
+                      <img
+                        className="h-10 w-10 rounded-full"
+                        src={application.student?.profilePicture || '/default-avatar.png'}
+                        alt="Profile"
+                        onError={(e) => {
+                          e.target.src = '/default-avatar.png';
+                        }}
+                      />
+                    </div>
+                    <div className="ml-4">
+                      <div className="text-sm font-medium text-gray-900">
+                        {application.student?.name || 'N/A'}
+                      </div>
+                      <div className="text-sm text-gray-500">
+                        {application.student?.rollNumber || 'N/A'}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+
+            case 'department':
+              return (
+                <div key={column} className="w-32 p-3">
+                  <span className="text-sm text-gray-900">
+                    {application.student?.department || 'N/A'}
+                  </span>
+                </div>
+              );
+
+            case 'batch':
+              return (
+                <div key={column} className="w-24 p-3">
+                  <span className="text-sm text-gray-900">
+                    {application.student?.batch || 'N/A'}
+                  </span>
+                </div>
+              );
+
+            case 'cgpa':
+              return (
+                <div key={column} className="w-20 p-3">
+                  <span className="text-sm text-gray-900">
+                    {application.student?.cgpa || 'N/A'}
+                  </span>
+                </div>
+              );
+
+            case 'status':
+              return (
+                <div key={column} className="w-32 p-3">
+                  <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${statusConfig[application.status]?.class || statusConfig.pending.class}`}>
+                    {statusConfig[application.status]?.label || 'Pending'}
+                  </span>
+                </div>
+              );
+
+            case 'actions':
+              return (
+                <div key={column} className="w-48 p-3">
+                  <div className="relative">
+                    <button
+                      onClick={(e) => handleActionsClick(e, application.id)}
+                      className="text-gray-400 hover:text-gray-600"
+                    >
+                      <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z" />
+                      </svg>
+                    </button>
+
+                    {openDropdownId === application.id && (
+                      <div
+                        className="origin-top-right absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 divide-y divide-gray-100 focus:outline-none z-50"
+                        style={{
+                          position: 'fixed',
+                          top: `${dropdownPosition.top}px`,
+                          left: `${dropdownPosition.left}px`
+                        }}
+                      >
+                        <div className="py-1">
+                          {Object.entries(statusConfig).map(([status, config]) => (
+                            <button
+                              key={status}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleStatusUpdateWithUndo(application.id, status);
+                                setOpenDropdownId(null);
+                              }}
+                              className="flex items-center w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                            >
+                              <span className="mr-2">
+                                {status === 'underReview' && '⏳'}
+                                {status === 'shortlisted' && '✅'}
+                                {status === 'onHold' && '🟡'}
+                                {status === 'interview' && '📅'}
+                                {status === 'selected' && '🎉'}
+                                {status === 'rejected' && '❌'}
+                              </span> {config.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+
+            default:
+              return (
+                <div key={column} className="flex-1 p-3">
+                  <span className="text-sm text-gray-900">
+                    {application[column] || 'N/A'}
+                  </span>
+                </div>
+              );
+          }
+        })}
+      </div>
     );
+  }, [memoizedApplications, selectedRows, openDropdownId, dropdownPosition, visibleColumns, statusConfig]);
 
-    // Calculate percentage with safeguard against division by zero
-    const totalJobSkills = normalizedJobSkills.length;
-    return totalJobSkills > 0 ? Math.round((matchedSkills.length / totalJobSkills) * 100) : 0;
+  // Enhanced status update with undo functionality
+  const handleStatusUpdateWithUndo = async (applicationId, newStatus) => {
+    try {
+      const application = applications.find(app => app.id === applicationId);
+      if (!application) {
+        toast.error('Application not found');
+        return;
+      }
+
+      const oldStatus = application.status;
+      
+      // Store the action for potential undo
+      const undoAction = {
+        applicationId,
+        oldStatus,
+        newStatus,
+        timestamp: Date.now()
+      };
+
+      setUndoStack(prev => [...prev, undoAction]);
+      setLastAction(undoAction);
+      setShowUndoSnackbar(true);
+
+      // Auto-hide undo snackbar after 5 seconds
+      setTimeout(() => {
+        setShowUndoSnackbar(false);
+        setUndoStack(prev => prev.filter(action => action.timestamp !== undoAction.timestamp));
+      }, 5000);
+
+      // Perform the status update
+      await handleStatusUpdate(applicationId, newStatus);
+
+    } catch (error) {
+      console.error('Error updating application status:', error);
+      toast.error('Failed to update status');
+    }
+  };
+
+  // Undo last action
+  const handleUndo = async () => {
+    if (undoStack.length === 0 || !lastAction) return;
+
+    try {
+      const application = applications.find(app => app.id === lastAction.applicationId);
+      if (!application) return;
+
+      // Revert the status
+      await handleStatusUpdate(lastAction.applicationId, lastAction.oldStatus);
+
+      // Remove from undo stack
+      setUndoStack(prev => prev.filter(action => action.timestamp !== lastAction.timestamp));
+      setLastAction(null);
+      setShowUndoSnackbar(false);
+
+      toast.success('Action undone successfully');
+    } catch (error) {
+      console.error('Error undoing action:', error);
+      toast.error('Failed to undo action');
+    }
+  };
+
+  // Handle row selection
+  const handleRowSelection = (applicationId, isSelected) => {
+    const newSelectedRows = new Set(selectedRows);
+    if (isSelected) {
+      newSelectedRows.add(applicationId);
+    } else {
+      newSelectedRows.delete(applicationId);
+    }
+    setSelectedRows(newSelectedRows);
+  };
+
+  // Handle select all
+  const handleSelectAll = (isSelected) => {
+    if (isSelected) {
+      setSelectedRows(new Set(memoizedApplications.map(app => app.id)));
+    } else {
+      setSelectedRows(new Set());
+    }
+  };
+
+  // Handle actions click (for bulk actions)
+  const handleActionsClick = (e, applicationId) => {
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    setDropdownPosition({
+      top: rect.bottom + window.scrollY,
+      left: rect.left + window.scrollX
+    });
+    setOpenDropdownId(openDropdownId === applicationId ? null : applicationId);
+  };
+
+  // Handle bulk status updates
+  const handleBulkStatusUpdate = async (status) => {
+    const confirmed = window.confirm(`Are you sure you want to update all selected applications to "${statusConfig[status]?.label || status}"?`);
+    if (!confirmed) return;
+
+    try {
+      for (const applicationId of selectedRows) {
+        await handleStatusUpdateWithUndo(applicationId, status);
+      }
+      setSelectedRows(new Set()); // Clear selected rows after bulk update
+      toast.success(`All selected applications updated to ${statusConfig[status]?.label || status}`);
+    } catch (error) {
+      console.error('Error updating bulk status:', error);
+      toast.error('Failed to update bulk status');
+    }
   };
 
   // Get screening questions from the first application's job data

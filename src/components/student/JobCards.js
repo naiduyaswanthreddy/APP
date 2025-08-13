@@ -39,7 +39,8 @@ const JobCards = () => {
     maxCTC: '',
     minCGPA: '',
     eligibleBatches: [],
-    skills: []
+    skills: [],
+    showWithdrawn: true
   });
   const [sortBy, setSortBy] = useState('deadline');
   const [sortOrder, setSortOrder] = useState('desc'); // Changed from 'asc' to 'desc'
@@ -412,6 +413,12 @@ const JobCards = () => {
       if (filters.jobStatus.includes('Open') && isApplied) return false;
       if (filters.jobStatus.includes('Eligible') && !isEligible) return false;
     }
+
+    // Withdrawn applications filter
+    if (!filters.showWithdrawn) {
+      const isWithdrawn = appliedJobs.includes(job.id) && applicationStatuses[job.id] === 'withdrawn';
+      if (isWithdrawn) return false;
+    }
     
     // Location filter
     if (filters.locations.length > 0 && 
@@ -500,10 +507,11 @@ const JobCards = () => {
       maxCTC: '',
       minCGPA: '',
       eligibleBatches: [],
-      skills: []
+      skills: [],
+      showWithdrawn: true
     });
     setSortBy('deadline');
-    setSortOrder('asc');
+    setSortOrder('desc');
   };
 
   // Toggle filter selection
@@ -788,6 +796,20 @@ onClick={() => {
                       ))}
                     </div>
                   </div>
+                  <div>
+                    <p className="text-sm text-gray-600 mb-1">Application Status</p>
+                    <div className="flex flex-wrap gap-2">
+                      <label className="inline-flex items-center px-3 py-1 bg-white border rounded-full cursor-pointer transition-colors duration-200 hover:bg-gray-100">
+                        <input
+                          type="checkbox"
+                          checked={filters.showWithdrawn}
+                          onChange={(e) => setFilters(prev => ({ ...prev, showWithdrawn: e.target.checked }))}
+                          className="mr-2 rounded"
+                        />
+                        <span className="text-sm">Show Withdrawn</span>
+                      </label>
+                    </div>
+                  </div>
                 </div>
               </div>
               
@@ -984,7 +1006,7 @@ onClick={() => {
                   return (
                     <div 
                       key={job.id} 
-                      className={`bg-white rounded-lg shadow-md overflow-hidden hover:shadow-lg transition-shadow duration-300 ${completed ? 'opacity-70' : ''}`}
+                      className={`bg-white rounded-lg shadow-md overflow-hidden hover:shadow-lg transition-shadow duration-300 ${completed ? 'opacity-70' : ''} ${isApplied && applicationStatuses[job.id] === 'withdrawn' ? 'opacity-60' : ''}`}
                     >
                       {/* Completed Label */}
                       {completed && (
@@ -992,12 +1014,35 @@ onClick={() => {
                           Completed
                         </div>
                       )}
+
+                      {/* Withdrawn Overlay */}
+                      {isApplied && applicationStatuses[job.id] === 'withdrawn' && (
+                        <div className="absolute inset-0 bg-red-50 bg-opacity-90 flex items-center justify-center z-10">
+                          <div className="text-center">
+                            <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-2">
+                              <svg className="w-8 h-8 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                              </svg>
+                            </div>
+                            <p className="text-red-800 font-semibold text-lg">Application Withdrawn</p>
+                            <p className="text-red-600 text-sm">Cannot reapply</p>
+                          </div>
+                        </div>
+                      )}
                       
                       {/* Card Header */}
                       <div className="p-4 border-b">
                         <div className="flex justify-between items-start">
                           <div>
-                            <h3 className="text-xl font-semibold text-gray-800">{job.position}</h3>
+                            <div className="flex items-center gap-2 mb-1">
+                              <h3 className="text-xl font-semibold text-gray-800">{job.position}</h3>
+                              {/* Withdrawn Badge */}
+                              {isApplied && applicationStatuses[job.id] === 'withdrawn' && (
+                                <span className="px-2 py-1 bg-red-100 text-red-800 text-xs font-medium rounded-full">
+                                  Withdrawn
+                                </span>
+                              )}
+                            </div>
                             <p className="text-gray-600">{job.company}</p>
                           </div>
                           <div className="flex flex-col items-end">

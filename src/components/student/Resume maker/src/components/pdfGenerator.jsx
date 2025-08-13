@@ -106,7 +106,12 @@ const ResumePDF = ({ resumeData }) => {
         {resumeData['Education'] && (
           <View style={styles.section}>
             <Text style={styles.subtitle}>Education</Text>
-            {/* Implement based on your Education component structure */}
+            {(resumeData['Education'].entries || []).map((ed, idx) => (
+              <View key={idx} style={{ marginBottom: 8 }}>
+                <Text style={styles.header}>{ed.institution} — {ed.degree}</Text>
+                <Text style={styles.text}>{ed.period} • {ed.score}</Text>
+              </View>
+            ))}
           </View>
         )}
 
@@ -114,7 +119,7 @@ const ResumePDF = ({ resumeData }) => {
         {resumeData['Skills'] && (
           <View style={styles.section}>
             <Text style={styles.subtitle}>Skills</Text>
-            {/* Implement based on your Skills component structure */}
+            <Text style={styles.text}>{(resumeData['Skills'].items || []).join(', ')}</Text>
           </View>
         )}
 
@@ -122,7 +127,13 @@ const ResumePDF = ({ resumeData }) => {
         {resumeData['Projects'] && (
           <View style={styles.section}>
             <Text style={styles.subtitle}>Projects</Text>
-            {/* Implement based on your Projects component structure */}
+            {(resumeData['Projects'].projects || []).map((p, idx) => (
+              <View key={idx} style={{ marginBottom: 8 }}>
+                <Text style={styles.header}>{p.name}</Text>
+                <Text style={styles.text}>{p.description}</Text>
+                <Text style={styles.text}>{p.techStack}</Text>
+              </View>
+            ))}
           </View>
         )}
 
@@ -130,7 +141,9 @@ const ResumePDF = ({ resumeData }) => {
         {resumeData['Certifications'] && (
           <View style={styles.section}>
             <Text style={styles.subtitle}>Certifications</Text>
-            {/* Implement based on your Certifications component structure */}
+            {(resumeData['Certifications'].items || []).map((c, idx) => (
+              <Text key={idx} style={styles.text}>{c.name} — {c.issuer}</Text>
+            ))}
           </View>
         )}
 

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { collection, query, where, getDocs, doc, getDoc, deleteDoc, updateDoc, writeBatch } from 'firebase/firestore';
+import { collection, query, where, getDocs, doc, getDoc, deleteDoc, updateDoc, writeBatch, orderBy } from 'firebase/firestore';
 import { db } from '../../../firebase';
 import { ToastContainer, toast } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -8,7 +8,10 @@ import * as XLSX from 'xlsx';
 import ApplicationsTable from './ApplicationsTable';
 import JobDetailsEdit from './JobDetailsEdit';
 import StudentDetailsModal from './StudentDetailsModal';
+import JobLogs from './JobLogs';
 import PageLoader from '../../ui/PageLoader';
+import { createStatusUpdateNotification, createInterviewNotification, createSystemAlertNotification } from '../../../utils/notificationHelpers';
+
 const JobApplications = () => {
   const { jobId } = useParams();
   const navigate = useNavigate();
@@ -450,6 +453,20 @@ const JobApplications = () => {
       setFilteredApplications(updatedApplications);
       setOpenDropdownId(null); // Close dropdown
       toast.success(`Round status updated to ${newStatus}`);
+
+      // Send student notification and optionally email
+      try {
+        const recipientId = applicationToUpdate.student?.id || applicationToUpdate.studentId || applicationToUpdate.student_id;
+        if (recipientId) {
+          const sendEmail = window.confirm('Also email the student about this status update?');
+          await createStatusUpdateNotification(recipientId, {
+            job: { position: job?.position || 'Unknown Position', company: job?.company || 'Company' },
+            status: newStatus
+          }, sendEmail);
+        }
+      } catch (notifyErr) {
+        console.error('Error sending status update notification/email:', notifyErr);
+      }
     } catch (error) {
       console.error("Error updating round status:", error);
       toast.error(`Failed to update round status: ${error.message}`);
@@ -506,6 +523,22 @@ const JobApplications = () => {
         `Successfully updated ${selectedApplications.length} applications\n${statusChanges}`,
         { autoClose: 5000 } // Give users more time to read the detailed message
       );
+      // Ask once whether to email students
+      const sendEmailAll = window.confirm('Send email to all selected students about this update?');
+
+      try {
+        for (const app of selectedApps) {
+          const recipientId = app.student?.id || app.studentId || app.student_id;
+          if (!recipientId) continue;
+          await createStatusUpdateNotification(recipientId, {
+            job: { position: job?.position || 'Unknown Position', company: job?.company || 'Company' },
+            status: newStatus
+          }, sendEmailAll);
+        }
+      } catch (notifyBulkErr) {
+        console.error('Error sending bulk status notifications/emails:', notifyBulkErr);
+      }
+
       setSelectedApplications([]); // Clear selection
     } catch (error) {
       console.error("Error in bulk update:", error);
@@ -674,22 +707,15 @@ const JobApplications = () => {
   };
   const handleShortlistStudents = async () => {
     if (selectedApplications.length === 0) {
-      toast.warning('Please select students to shortlist');
-      return;
-    }
-    const nextRound = getNextRoundFromTransition(selectedRoundTransition);
-    let confirmMsg;
-    if (nextRound) {
-      confirmMsg = `Shortlist ${selectedApplications.length} students from ${currentRound} to ${nextRound}?`;
-    } else {
-      confirmMsg = `Finalize shortlist for ${selectedApplications.length} students in ${currentRound}?`;
-    }
-    if (!window.confirm(confirmMsg)) {
+      toast.error('Please select at least one student to shortlist');
       return;
     }
     setRoundLoading(true);
     try {
       const batch = writeBatch(db);
+      
+      // Determine next round based on selected transition
+      const nextRound = selectedRoundTransition ? getNextRoundFromTransition(selectedRoundTransition) : null;
     
       // Shortlist selected
       for (const applicationId of selectedApplications) {
@@ -715,6 +741,16 @@ const JobApplications = () => {
           batch.update(applicationRef, {
             [`student.rounds`]: updatedRounds
           });
+
+          // Send notification to student
+          try {
+            await createStatusUpdateNotification(application.student.id, {
+              job: { position: application.job?.position || 'Unknown Position' },
+              status: 'shortlisted'
+            });
+          } catch (error) {
+            console.error('Error sending shortlist notification:', error);
+          }
         }
       }
       // Reject remaining eligible students for current round
@@ -740,6 +776,16 @@ const JobApplications = () => {
           batch.update(applicationRef, {
             [`student.rounds`]: updatedRounds
           });
+
+          // Send notification to student
+          try {
+            await createStatusUpdateNotification(application.student.id, {
+              job: { position: application.job?.position || 'Unknown Position' },
+              status: 'rejected'
+            });
+          } catch (error) {
+            console.error('Error sending rejection notification:', error);
+          }
         }
       }
    
@@ -747,17 +793,25 @@ const JobApplications = () => {
    
       // Update current round to next round if exists
       if (nextRound) {
-        setCurrentRound(nextRound);
+        await updateDoc(doc(db, "jobs", jobId), {
+          currentRound: nextRound
+        });
+      }
+
+      // Send admin notification about the action
+      try {
+        await createSystemAlertNotification(
+          'Students Shortlisted',
+          `${selectedApplications.length} students have been shortlisted for ${currentRound} round. ${remainingIds.length} students were rejected.`,
+          `/admin/job-applications/${jobId}`
+        );
+      } catch (error) {
+        console.error('Error sending admin notification:', error);
       }
    
-      // Clear selections
+      toast.success(`${selectedApplications.length} students shortlisted successfully!`);
       setSelectedApplications([]);
-   
-      // Refresh the data
-      await fetchJobAndApplications();
-   
-      toast.success(`Successfully shortlisted ${selectedApplications.length} students for ${nextRound || 'final round'}`);
-   
+      fetchApplications();
     } catch (error) {
       console.error('Error shortlisting students:', error);
       toast.error('Failed to shortlist students');
@@ -765,19 +819,49 @@ const JobApplications = () => {
       setRoundLoading(false);
     }
   };
+
+  const fetchApplications = async () => {
+    try {
+      const applicationsRef = collection(db, "applications");
+      const q = query(applicationsRef, where("jobId", "==", jobId));
+      const querySnapshot = await getDocs(q);
+      
+      const applicationsData = [];
+      for (const doc of querySnapshot.docs) {
+        const applicationData = doc.data();
+        const studentRef = doc(db, "students", applicationData.studentId);
+        const studentSnap = await getDoc(studentRef);
+        
+        if (studentSnap.exists()) {
+          applicationsData.push({
+            id: doc.id,
+            ...applicationData,
+            student: {
+              id: studentSnap.id,
+              ...studentSnap.data()
+            }
+          });
+        }
+      }
+      
+      setApplications(applicationsData);
+      setFilteredApplications(applicationsData);
+    } catch (error) {
+      console.error('Error fetching applications:', error);
+      toast.error('Failed to fetch applications');
+    }
+  };
+
   const handleRejectStudents = async () => {
     if (selectedApplications.length === 0) {
-      toast.warning('Please select students to reject');
+      toast.error('Please select students to reject');
       return;
     }
-    const confirmMsg = `Reject ${selectedApplications.length} students for ${currentRound}?`;
-    if (!window.confirm(confirmMsg)) {
-      return;
-    }
-    setRoundLoading(true);
+
     try {
+      setRoundLoading(true);
       const batch = writeBatch(db);
-   
+
       for (const applicationId of selectedApplications) {
         const application = applications.find(app => app.id === applicationId);
         if (application) {
@@ -798,24 +882,81 @@ const JobApplications = () => {
           batch.update(applicationRef, {
             [`student.rounds`]: updatedRounds
           });
+
+          // Send notification to student
+          try {
+            await createStatusUpdateNotification(application.student.id, {
+              job: { position: application.job?.position || 'Unknown Position' },
+              status: 'rejected'
+            });
+          } catch (error) {
+            console.error('Error sending rejection notification:', error);
+          }
         }
       }
    
       await batch.commit();
+
+      // Send admin notification about the action
+      try {
+        await createSystemAlertNotification(
+          'Students Rejected',
+          `${selectedApplications.length} students have been rejected for ${currentRound} round.`,
+          `/admin/job-applications/${jobId}`
+        );
+      } catch (error) {
+        console.error('Error sending admin notification:', error);
+      }
    
-      // Clear selections
+      toast.success(`${selectedApplications.length} students rejected successfully!`);
       setSelectedApplications([]);
-   
-      // Refresh the data
-      await fetchJobAndApplications();
-   
-      toast.success(`Successfully rejected ${selectedApplications.length} students for ${currentRound}`);
-   
+      fetchApplications();
     } catch (error) {
       console.error('Error rejecting students:', error);
       toast.error('Failed to reject students');
     } finally {
       setRoundLoading(false);
+    }
+  };
+
+  const scheduleInterview = async (applicationId, interviewDateTime) => {
+    try {
+      const application = applications.find(app => app.id === applicationId);
+      if (!application) return;
+
+      const applicationRef = doc(db, "applications", applicationId);
+      await updateDoc(applicationRef, {
+        interviewDateTime: interviewDateTime,
+        status: 'interview_scheduled',
+        updatedAt: new Date()
+      });
+
+      // Send interview notification to student
+      try {
+        await createInterviewNotification(application.student.id, {
+          job: { position: application.job?.position || 'Unknown Position' },
+          interviewDateTime: interviewDateTime
+        });
+      } catch (error) {
+        console.error('Error sending interview notification:', error);
+      }
+
+      // Send admin notification
+      try {
+        await createSystemAlertNotification(
+          'Interview Scheduled',
+          `Interview scheduled for ${application.student?.name || 'Student'} on ${new Date(interviewDateTime).toLocaleString()}`,
+          `/admin/job-applications/${jobId}`
+        );
+      } catch (error) {
+        console.error('Error sending admin notification:', error);
+      }
+
+      toast.success('Interview scheduled successfully!');
+      fetchApplications();
+    } catch (error) {
+      console.error('Error scheduling interview:', error);
+      toast.error('Failed to schedule interview');
     }
   };
   // Initialize round transitions when job data is loaded
@@ -1091,7 +1232,7 @@ const JobApplications = () => {
                        </div>
                        <h4 className="text-xl font-bold text-gray-800">Basic Information</h4>
                      </div>
-                     <div className="space-y-3">
+                          <div className="space-y-3">
                        <div className="flex justify-between items-center py-2 border-b border-gray-100">
                          <span className="text-gray-600 font-medium">Company Name</span>
                          <span className="text-gray-900 font-semibold">{job?.company || job?.companyName || 'N/A'}</span>
@@ -1102,12 +1243,12 @@ const JobApplications = () => {
                        </div>
                        <div className="py-2">
                          <span className="text-gray-600 font-medium block mb-2">Job Description</span>
-                         <div
-                           className="text-gray-700 bg-gray-50 rounded-lg p-3 text-sm leading-relaxed"
-                           dangerouslySetInnerHTML={{
-                             __html: job?.description || job?.jobDescription || 'N/A'
-                           }}
-                         />
+                          <div
+                            className="text-gray-700 bg-gray-50 rounded-lg p-3 text-sm leading-relaxed"
+                            dangerouslySetInnerHTML={{
+                              __html: require('../../../utils/sanitize').sanitizeHtml(job?.description || job?.jobDescription || 'N/A')
+                            }}
+                          />
                        </div>
                      </div>
                    </div>
@@ -1167,7 +1308,7 @@ const JobApplications = () => {
                        </div>
                        <h4 className="text-xl font-bold text-gray-800">Job Details</h4>
                      </div>
-                     <div className="space-y-3">
+                      <div className="space-y-3">
                        <div className="flex justify-between items-center py-2 border-b border-gray-100">
                          <span className="text-gray-600 font-medium">Location</span>
                          <span className="text-gray-900 font-semibold">{job?.location || job?.jobLocation || 'N/A'}</span>
@@ -1308,25 +1449,25 @@ const JobApplications = () => {
                        </div>
                        <h4 className="text-xl font-bold text-gray-800">Screening Questions</h4>
                      </div>
-                     <div className="space-y-3">
-                       {Array.isArray(job?.screeningQuestions) && job.screeningQuestions.length > 0 ? (
-                         job.screeningQuestions.map((q, index) => (
-                           <div key={index} className="p-3 bg-gray-50 rounded-lg">
-                             <div className="flex items-start gap-2">
-                               <span className="text-sm font-bold text-gray-500">Q{index + 1}:</span>
-                               <div className="flex-1">
-                                 <p className="font-medium text-gray-800 mb-1">{q.question || `Question ${index + 1}`}</p>
-                                 <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full">
-                                   {q.type || 'Text Input'}
-                                 </span>
-                               </div>
-                             </div>
-                           </div>
-                         ))
-                       ) : (
-                         <div className="text-gray-500 text-center py-4">No screening questions</div>
-                       )}
-                     </div>
+                      <div className="space-y-3">
+                        {Array.isArray(job?.screeningQuestions) && job.screeningQuestions.length > 0 ? (
+                          job.screeningQuestions.map((q, index) => (
+                            <div key={index} className="p-3 bg-gray-50 rounded-lg">
+                              <div className="flex items-start gap-2">
+                                <span className="text-sm font-bold text-gray-500">Q{index + 1}:</span>
+                                <div className="flex-1">
+                                  <p className="font-medium text-gray-800 mb-1">{q.question || `Question ${index + 1}`}</p>
+                                  <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full" aria-label="question-type">
+                                    {q.type || 'Text Input'}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          ))
+                        ) : (
+                          <div className="text-gray-500 text-center py-4">No screening questions</div>
+                        )}
+                      </div>
                    </div>
                  </div>
                  {/* File Attachments */}
@@ -1595,6 +1736,8 @@ const JobApplications = () => {
           currentRound={currentRound} // Pass currentRound
           screeningQuestions={job?.screeningQuestions || []}
         />
+        {/* Job Activity Logs */}
+        <JobLogs jobId={jobId} />
         {/* Pagination Controls */}
         <div className="flex justify-center gap-2 mt-4">
           {Array.from({ length: totalPages }, (_, i) => (

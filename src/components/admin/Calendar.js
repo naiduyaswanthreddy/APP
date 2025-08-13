@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { Calendar, momentLocalizer } from 'react-big-calendar';
 import moment from 'moment';
 import 'react-big-calendar/lib/css/react-big-calendar.css';
-import { collection, getDocs, doc, addDoc, updateDoc, deleteDoc, serverTimestamp, query, where, writeBatch } from 'firebase/firestore';
+import { collection, getDocs, doc, addDoc, updateDoc, deleteDoc, serverTimestamp, query, where, writeBatch, getDoc } from 'firebase/firestore';
+import { logEventActivity } from '../../utils/activityLogger';
 import { db, auth } from '../../firebase';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
@@ -14,7 +15,8 @@ import { HTML5Backend } from 'react-dnd-html5-backend';
 import { jsPDF } from 'jspdf';
 import 'jspdf-autotable';
 import Select from 'react-select';
-import { createAnnouncementNotification, createEventNotification } from '../../utils/notificationHelpers';
+import { createAnnouncementNotification, createEventNotification, createSystemAlertNotification, createReminderNotification } from '../../utils/notificationHelpers';
+import { collection as col, getDocs as gDocs, orderBy as oBy, query as qy } from 'firebase/firestore';
 
 const localizer = momentLocalizer(moment);
 
@@ -282,7 +284,8 @@ const AdminCalendar = () => {
         });
 
         for (const event of recurringEvents) {
-          await addDoc(collection(db, 'events'), event);
+          const ref = await addDoc(collection(db, 'events'), event);
+          await logEventActivity(ref.id, 'create', { title: event.title, type: event.type });
         }
 
         const newEvents = recurringEvents.map((event, index) => ({
@@ -293,6 +296,7 @@ const AdminCalendar = () => {
         toast.success('Recurring events added successfully');
       } else {
         const docRef = await addDoc(collection(db, 'events'), eventData);
+        await logEventActivity(docRef.id, 'create', { title: eventData.title, type: eventData.type });
         setEvents([...events, { id: docRef.id, ...eventData }]);
         toast.success('Event added successfully');
       }
@@ -356,6 +360,7 @@ const AdminCalendar = () => {
       };
 
       await updateDoc(eventRef, updateData);
+      await logEventActivity(editEvent.id, 'update', { title: updateData.title, type: updateData.type });
       if (editEvent.notifyChanges && editEvent.notifyStudents) {
         await sendEventNotifications({ ...updateData, id: editEvent.id });
       }
@@ -381,6 +386,7 @@ const AdminCalendar = () => {
       }
 
       await deleteDoc(doc(db, 'events', selectedEvent.id));
+      await logEventActivity(selectedEvent.id, 'delete', { title: selectedEvent.title, type: selectedEvent.type });
       setEvents(events.filter(event => event.id !== selectedEvent.id));
       toast.success('Event deleted successfully');
       setShowEventModal(false);
@@ -431,6 +437,46 @@ const AdminCalendar = () => {
       case 'result': return '#4CAF50';
       default: return '#607D8B';
     }
+  };
+
+  const EventLogs = ({ eventId }) => {
+    const [logs, setLogs] = useState([]);
+    const [loading, setLoading] = useState(false);
+    useEffect(() => {
+      const run = async () => {
+        try {
+          setLoading(true);
+          const ref = col(db, 'events', eventId, 'logs');
+          const qq = qy(ref, oBy('timestamp', 'desc'));
+          const snap = await gDocs(qq);
+          setLogs(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+        } catch (e) {
+          // ignore
+        } finally {
+          setLoading(false);
+        }
+      };
+      if (eventId) run();
+    }, [eventId]);
+    if (!eventId) return null;
+    return (
+      <div className="mt-4">
+        <p className="text-sm text-gray-500 mb-1">Activity Logs</p>
+        {loading ? (
+          <p className="text-xs text-gray-400">Loading…</p>
+        ) : logs.length === 0 ? (
+          <p className="text-xs text-gray-400">No logs found.</p>
+        ) : (
+          <ul className="space-y-1 max-h-40 overflow-y-auto">
+            {logs.map(l => (
+              <li key={l.id} className="text-xs text-gray-700">
+                <span className="font-medium">{l.action}</span> by {l.actorEmail || l.actorId} at {l.timestamp?.toDate ? l.timestamp.toDate().toLocaleString() : ''}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    );
   };
 
   // Filter events based on selected filter
@@ -503,26 +549,29 @@ const AdminCalendar = () => {
   const sendEventNotifications = async (eventData) => {
     try {
       let title = `New Event: ${eventData.title}`;
-      let message = `Date: ${moment(eventData.start).format('MMM D, YYYY')}`;
-      if (!moment(eventData.start).isSame(eventData.end, 'day')) {
-        message += ` to ${moment(eventData.end).format('MMM D, YYYY')}`;
+      let message = `Event: ${eventData.title}`;
+      
+      if (eventData.notes) {
+        message += `\n${eventData.notes}`;
       }
-      message += ` • Time: ${moment(eventData.start).format('h:mm A')} - ${moment(eventData.end).format('h:mm A')}`;
+      
       if (eventData.location) {
-        message += ` • Location: ${eventData.location}`;
+        message += `\nLocation: ${eventData.location}`;
       }
 
-      if (eventData.targetAudience === 'specific') {
-        message += ` • For students in: ${eventData.eligibleBatch.join(', ')} batch`;
-        if (eventData.eligibleDepartments.length > 0) {
-          message += ` and ${eventData.eligibleDepartments.join(', ')} department(s)`;
-        }
-      } else if (eventData.targetAudience === 'job') {
-        message += ` • Only for students who applied for selected job(s)`;
-      }
+      // Read admin preference for emailing on event updates
+      let sendEmail = false;
+      try {
+        const adminPrefsDoc = await getDoc(doc(db, 'adminPreferences', auth.currentUser?.uid || 'global'));
+        sendEmail = !!adminPrefsDoc.data()?.emailOnEventNotifications;
+      } catch {}
 
       if (eventData.targetAudience === 'all') {
-        await createAnnouncementNotification(title, message, '/student/calendar');
+        // Notify all students
+        const studentsSnapshot = await getDocs(collection(db, 'students'));
+        for (const s of studentsSnapshot.docs) {
+          await createEventNotification(s.id, title, message, '/student/calendar', sendEmail);
+        }
       } else if (eventData.targetAudience === 'job' && eventData.selectedJobs.length > 0) {
         const applicationsSnapshot = await getDocs(
           query(collection(db, 'applications'), where('jobId', 'in', eventData.selectedJobs))
@@ -531,7 +580,7 @@ const AdminCalendar = () => {
         applicationsSnapshot.docs.forEach(doc => {
           const studentId = doc.data().studentId;
           if (!processedStudents.has(studentId)) {
-            createEventNotification(studentId, title, message, '/student/calendar');
+            createEventNotification(studentId, title, message, '/student/calendar', sendEmail);
             processedStudents.add(studentId);
           }
         });
@@ -546,8 +595,19 @@ const AdminCalendar = () => {
           return eventData.eligibleDepartments.length === 0 || eventData.eligibleDepartments.includes(studentData.department);
         });
         eligibleStudents.forEach(doc => {
-          createEventNotification(doc.id, title, message, '/student/calendar');
+          createEventNotification(doc.id, title, message, '/student/calendar', sendEmail);
         });
+      }
+
+      // Send admin notification about the event creation
+      try {
+        await createSystemAlertNotification(
+          'Event Created',
+          `New event "${eventData.title}" has been created and notifications sent to eligible students.`,
+          '/admin/calendar'
+        );
+      } catch (error) {
+        console.error('Error sending admin notification:', error);
       }
 
       toast.success('Event notifications sent to eligible students');
@@ -556,6 +616,80 @@ const AdminCalendar = () => {
       toast.error('Failed to send notifications');
     }
   };
+
+  // Check for approaching deadlines and send reminders
+  const checkDeadlinesAndSendReminders = async () => {
+    try {
+      const now = new Date();
+      const oneDayFromNow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+      const threeDaysFromNow = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000);
+
+      // Check job deadlines
+      const jobsSnapshot = await getDocs(collection(db, 'jobs'));
+      jobsSnapshot.docs.forEach(jobDoc => {
+        const job = jobDoc.data();
+        if (job.deadline) {
+          const deadline = job.deadline.toDate ? job.deadline.toDate() : new Date(job.deadline);
+          const timeUntilDeadline = deadline - now;
+          
+          // Send reminder 1 day before deadline
+          if (timeUntilDeadline > 0 && timeUntilDeadline <= 24 * 60 * 60 * 1000) {
+            // Send to all students
+            createReminderNotification(
+              'all', // This will be handled by the helper to send to all students
+              'Deadline Approaching',
+              `Application deadline for ${job.position} at ${job.company} is tomorrow! Don't miss this opportunity.`,
+              `/student/jobpost`
+            );
+          }
+          
+          // Send reminder 3 days before deadline
+          if (timeUntilDeadline > 24 * 60 * 60 * 1000 && timeUntilDeadline <= 3 * 24 * 60 * 60 * 1000) {
+            createReminderNotification(
+              'all',
+              'Deadline Reminder',
+              `Application deadline for ${job.position} at ${job.company} is in 3 days. Apply now!`,
+              `/student/jobpost`
+            );
+          }
+        }
+      });
+
+      // Check event deadlines
+      const eventsSnapshot = await getDocs(collection(db, 'events'));
+      eventsSnapshot.docs.forEach(eventDoc => {
+        const event = eventDoc.data();
+        if (event.start) {
+          const eventStart = event.start.toDate ? event.start.toDate() : new Date(event.start);
+          const timeUntilEvent = eventStart - now;
+          
+          // Send reminder 1 day before event
+          if (timeUntilEvent > 0 && timeUntilEvent <= 24 * 60 * 60 * 1000) {
+            createReminderNotification(
+              'all',
+              'Event Tomorrow',
+              `Event "${event.title}" is tomorrow! Don't forget to attend.`,
+              '/student/calendar'
+            );
+          }
+        }
+      });
+
+    } catch (error) {
+      console.error('Error checking deadlines:', error);
+    }
+  };
+
+  // Set up deadline checking interval
+  useEffect(() => {
+    // Check deadlines every hour
+    const interval = setInterval(checkDeadlinesAndSendReminders, 60 * 60 * 1000);
+    
+    // Initial check
+    checkDeadlinesAndSendReminders();
+    
+    return () => clearInterval(interval);
+  }, []);
 
   // Handle event drag and drop
   const onEventDrop = ({ event, start, end }) => {
@@ -897,6 +1031,8 @@ const AdminCalendar = () => {
                       <p className="capitalize">{selectedEvent.type.replace(/-/g, ' ')}</p>
                     </div>
                   </div>
+                  {/* Event Logs */}
+                  <EventLogs eventId={selectedEvent.id} />
                   {selectedEvent.attachments && selectedEvent.attachments.length > 0 && (
                     <div className="flex items-start">
                       <div className="mr-3 text-gray-500 mt-1">📎</div>

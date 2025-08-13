@@ -140,10 +140,15 @@ const Students = () => {
           >
             <option value="all">All Departments</option>
             <option value="CSE">CSE</option>
+            <option value="IT">IT</option>
             <option value="ECE">ECE</option>
             <option value="EEE">EEE</option>
-            <option value="MECH">MECH</option>
-            <option value="CIVIL">CIVIL</option>
+            <option value="ME">ME</option>
+            <option value="CE">CE</option>
+            <option value="CHE">CHE</option>
+            <option value="AIE">AIE</option>
+            <option value="CCE">CCE</option>
+            <option value="MBA">MBA</option>
           </select>
         </div>
       </div>

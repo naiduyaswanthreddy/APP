@@ -3,6 +3,7 @@ import { doc, updateDoc, collection, addDoc, getDoc, query, where, getDocs } fro
 import { db } from '../../../firebase';
 import { toast } from 'react-toastify';
 import { format } from 'date-fns';
+import { createSystemAlertNotification, createStatusUpdateNotification } from '../../../utils/notificationHelpers';
 
 const EnhancedSelectionWorkflow = ({ application, job, onStatusUpdate }) => {
   const [loading, setLoading] = useState(false);
@@ -165,7 +166,7 @@ const EnhancedSelectionWorkflow = ({ application, job, onStatusUpdate }) => {
       studentId: application.student_id,
       type: 'offer_rejected',
       title: 'Offer Rejected',
-      message: `You have rejected the offer from ${job.company} for the position of ${job.position}.`,
+      message: `You have rejected the offer from ${job.company} for the position of ${job.position}. You may continue applying for other opportunities.`,
       jobId: job.id,
       createdAt: new Date(),
       read: false
@@ -201,20 +202,28 @@ const EnhancedSelectionWorkflow = ({ application, job, onStatusUpdate }) => {
       }
 
       await updateApplicationStatus("selected");
-      const offerId = await createOffer({});
-      await sendSelectionNotification(offerId);
+      await updateStudentPlacementStatus({});
+      await addToPlacedStudents({});
+      await updatePlacementStats({});
       await updateCompanyStats('selected');
-      await logAuditEvent('student_selected', {
-        studentId: application.student_id,
-        jobId: job.id,
-        offerId
-      });
+      await sendSelectionNotification({});
 
-      toast.success("Student successfully selected!");
+      // Send admin notification
+      try {
+        await createSystemAlertNotification(
+          'Student Selected',
+          `${studentDetails?.name || 'Student'} has been selected for ${job?.position || 'position'} at ${job?.company || 'company'}`,
+          `/admin/job-applications/${job?.id || 'unknown'}`
+        );
+      } catch (error) {
+        console.error('Error sending admin notification:', error);
+      }
+
+      toast.success("Student marked as selected!");
       onStatusUpdate();
     } catch (error) {
-      console.error("Error in student selection:", error);
-      toast.error("Failed to complete selection process");
+      console.error("Error in final round selection:", error);
+      toast.error("Failed to mark student as selected");
     } finally {
       setLoading(false);
     }
@@ -235,6 +244,17 @@ const EnhancedSelectionWorkflow = ({ application, job, onStatusUpdate }) => {
       await updateCompanyStats('accepted');
       await sendAcceptanceNotification({});
 
+      // Send admin notification
+      try {
+        await createSystemAlertNotification(
+          'Offer Accepted',
+          `${studentDetails?.name || 'Student'} has accepted the offer for ${job?.position || 'position'} at ${job?.company || 'company'}`,
+          `/admin/job-applications/${job?.id || 'unknown'}`
+        );
+      } catch (error) {
+        console.error('Error sending admin notification:', error);
+      }
+
       toast.success("Offer accepted! Student marked as placed.");
       onStatusUpdate();
     } catch (error) {
@@ -253,6 +273,17 @@ const EnhancedSelectionWorkflow = ({ application, job, onStatusUpdate }) => {
       await updateCompanyStats('rejected');
       await sendRejectionNotification({});
 
+      // Send admin notification
+      try {
+        await createSystemAlertNotification(
+          'Offer Rejected',
+          `${studentDetails?.name || 'Student'} has rejected the offer for ${job?.position || 'position'} at ${job?.company || 'company'}`,
+          `/admin/job-applications/${job?.id || 'unknown'}`
+        );
+      } catch (error) {
+        console.error('Error sending admin notification:', error);
+      }
+
       toast.success("Offer rejected successfully");
       onStatusUpdate();
     } catch (error) {
@@ -265,17 +296,24 @@ const EnhancedSelectionWorkflow = ({ application, job, onStatusUpdate }) => {
 
   // Notification functions
   const sendSelectionNotification = async (offerId) => {
-    const notificationRef = collection(db, "notifications");
-    await addDoc(notificationRef, {
-      studentId: application.student_id,
-      type: 'selection',
-      title: 'Congratulations! You have been selected',
-      message: `You have been selected for ${job.position} at ${job.company}. Please check your offer details.`,
-      offerId,
-      jobId: job.id,
-      createdAt: new Date(),
-      read: false
-    });
+    try {
+      // Import the notification helper function
+      const { sendSelectionNotification: sendNotification } = await import('../../../utils/notificationHelpers');
+      await sendNotification(application.student_id, job.id, job.position, job.company);
+    } catch (error) {
+      // Fallback to direct notification creation
+      const notificationRef = collection(db, "notifications");
+      await addDoc(notificationRef, {
+        studentId: application.student_id,
+        type: 'job_selection',
+        title: 'Congratulations! You have been selected!',
+        message: `You have been selected for ${job.position} at ${job.company}. Please accept or reject your offer.`,
+        jobId: job.id,
+        createdAt: new Date(),
+        read: false,
+        recipientType: 'student'
+      });
+    }
   };
 
   const sendAcceptanceNotification = async (acceptanceData) => {

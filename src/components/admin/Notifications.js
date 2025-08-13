@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { collection, getDocs, query, orderBy, where, updateDoc, doc, onSnapshot, Timestamp, writeBatch } from 'firebase/firestore';
-import { db } from '../../firebase';
+import { db, enablePushNotifications, onForegroundMessage } from '../../firebase';
 import { toast, ToastContainer } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import { useNavigate } from 'react-router-dom';
@@ -19,31 +19,45 @@ const Notifications = () => {
   const notificationTypes = {
     student_event: { 
       icon: <User size={20} />, 
-      label: '🔹 Student Activity',
+      label: 'Student Activity',
       bgColor: 'bg-blue-50',
       borderColor: 'border-blue-200'
     },
     job_event: { 
       icon: <Briefcase size={20} />, 
-      label: '🔹 Job Updates',
+      label: 'Job Updates',
       bgColor: 'bg-green-50',
       borderColor: 'border-green-200'
     },
     system_alert: { 
       icon: <AlertTriangle size={20} />, 
-      label: '🔹 System Alerts',
+      label: 'System Alerts',
       bgColor: 'bg-yellow-50',
       borderColor: 'border-yellow-200'
     },
     company_action: { 
       icon: <Building size={20} />, 
-      label: '🏢 Company Actions',
+      label: 'Company Actions',
       bgColor: 'bg-purple-50',
       borderColor: 'border-purple-200'
     }
   };
 
   useEffect(() => {
+    // Request push permission
+    (async ()=>{ await enablePushNotifications(); })();
+    // Foreground push updates list
+    const unsub = onForegroundMessage((payload)=>{
+      const notif = {
+        id: Date.now().toString(),
+        title: payload.notification?.title || 'Notification',
+        message: payload.notification?.body || '',
+        type: payload.data?.type || 'system_alert',
+        timestamp: new Date(),
+        isRead: false
+      };
+      setNotifications(prev => [notif, ...prev]);
+    });
     // Set up real-time listener for notifications
     const setupNotificationsListener = () => {
       // Base query for admin notifications
@@ -120,7 +134,7 @@ const Notifications = () => {
     };
 
     const unsubscribe = setupNotificationsListener();
-    return () => unsubscribe();
+    return () => { unsubscribe(); if (typeof unsub === 'function') unsub(); };
   }, [filter, timeFilter]);
 
   const handleMarkAsRead = async (notificationId) => {

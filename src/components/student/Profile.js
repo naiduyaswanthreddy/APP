@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { auth, db } from "../../firebase";
-import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from "firebase/firestore";
+import { doc, getDoc, setDoc, updateDoc, serverTimestamp, collection, addDoc } from "firebase/firestore";
 import { ToastContainer, toast } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import { useNavigate, Link } from "react-router-dom";
@@ -10,14 +10,17 @@ import {
   Award, 
   Book, 
   Download,
+  Settings,
 } from "lucide-react";
 import LoadingSpinner from '../ui/LoadingSpinner';
+import { createSystemAlertNotification, createCompanyActionNotification } from '../../utils/notificationHelpers';
 
 // Import the individual profile components
 import ProfileBasic from "./ProfileBasic";
 import ProfileAcademics from "./ProfileAcademics";
 import ProfileCareer from "./ProfileCareer";
 import ProfileExcellence from "./ProfileExcellence";
+import PushNotificationSettings from "./PushNotificationSettings";
 
 const Profile = () => {
   const navigate = useNavigate();
@@ -100,6 +103,77 @@ const Profile = () => {
     return new Blob(['PDF content'], { type: 'application/pdf' });
   };
 
+  const handleProfileUpdate = async (updatedData) => {
+    try {
+      const user = auth.currentUser;
+      if (!user) {
+        toast.error('Please login to update your profile');
+        return;
+      }
+
+      const studentRef = doc(db, 'students', user.uid);
+      await updateDoc(studentRef, {
+        ...updatedData,
+        updatedAt: serverTimestamp()
+      });
+
+      // Send admin notification about profile update
+      try {
+        await createSystemAlertNotification(
+          'Student Profile Updated',
+          `Student ${user.displayName || 'Unknown'} has updated their profile information.`,
+          `/admin/students/${user.uid}`
+        );
+      } catch (error) {
+        console.error('Error sending admin notification:', error);
+      }
+
+      toast.success('Profile updated successfully!');
+      fetchUserProfile();
+    } catch (error) {
+      console.error('Error updating profile:', error);
+      toast.error('Failed to update profile');
+    }
+  };
+
+  const handleAchievementSubmit = async (achievementData) => {
+    try {
+      const user = auth.currentUser;
+      if (!user) {
+        toast.error('Please login to submit achievement');
+        return;
+      }
+
+      const achievement = {
+        ...achievementData,
+        studentId: user.uid,
+        studentName: user.displayName || 'Unknown',
+        submittedAt: serverTimestamp(),
+        approvalStatus: 'pending',
+        featured: false
+      };
+
+      await addDoc(collection(db, 'achievement_posts'), achievement);
+
+      // Send admin notification about new achievement submission
+      try {
+        await createCompanyActionNotification(
+          'Achievement Submission',
+          `Student ${user.displayName || 'Unknown'} has submitted a new achievement for review.`,
+          '/admin/gallery'
+        );
+      } catch (error) {
+        console.error('Error sending admin notification:', error);
+      }
+
+      toast.success('Achievement submitted successfully! It will be reviewed by admin.');
+      // setShowAchievementModal(false); // This state variable is not defined in the original file
+    } catch (error) {
+      console.error('Error submitting achievement:', error);
+      toast.error('Failed to submit achievement');
+    }
+  };
+
   if (loading) {
     return <div className="flex justify-center items-center min-h-screen"><LoadingSpinner size="large" text="Loading profile..." /></div>;
   }
@@ -148,7 +222,7 @@ const Profile = () => {
       
       {/* Profile Navigation */}
       <div className="">
-        <nav className="flex gap-2 bg-gray-100 overflow-x-auto">
+        <nav className="flex space-x-1 bg-gray-100 p-1 rounded-t-lg">
           <button
             onClick={() => setActiveTab("basic")}
             className={`flex items-center px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
@@ -156,7 +230,7 @@ const Profile = () => {
             }`}
           >
             <User size={16} className="mr-2" />
-            <span>Basic Info</span>
+            <span>Basic</span>
           </button>
           
           <button
@@ -188,11 +262,21 @@ const Profile = () => {
             <Award size={16} className="mr-2" />
             <span>Excellence</span>
           </button>
+
+          <button
+            onClick={() => setActiveTab("settings")}
+            className={`flex items-center px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
+              activeTab === "settings" ? "bg-white text-purple-600 border-t border-l border-r border-purple-500 -mb-px" : "text-gray-500 hover:text-gray-700 hover:bg-gray-50"
+            }`}
+          >
+            <Settings size={16} className="mr-2" />
+            <span>Settings</span>
+          </button>
         </nav>
       </div>
       
       {/* Profile Content */}
-      <div className={`bg-white rounded-lg shadow overflow-hidden p-6 ${activeTab === "basic" ? "border border-blue-500" : ""} ${activeTab === "academics" ? "border border-green-500" : ""} ${activeTab === "career" ? "border border-yellow-500" : ""} ${activeTab === "excellence" ? "border border-red-500" : ""}`}>
+      <div className={`bg-white rounded-lg shadow overflow-hidden p-6 ${activeTab === "basic" ? "border border-blue-500" : ""} ${activeTab === "academics" ? "border border-green-500" : ""} ${activeTab === "career" ? "border border-yellow-500" : ""} ${activeTab === "excellence" ? "border border-red-500" : ""} ${activeTab === "settings" ? "border border-purple-500" : ""}`}>
         {/* Basic Info Tab */}
         {activeTab === "basic" && (
           <div>
@@ -218,6 +302,13 @@ const Profile = () => {
         {activeTab === "excellence" && (
           <div>
             <ProfileExcellence />
+          </div>
+        )}
+
+        {/* Settings Tab */}
+        {activeTab === "settings" && (
+          <div>
+            <PushNotificationSettings />
           </div>
         )}
       </div>
@@ -254,6 +345,14 @@ const Profile = () => {
         >
           <Award size={20} />
           <span className="text-xs mt-1">Excellence</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab("settings")}
+          className={`flex flex-col items-center p-2 ${activeTab === "settings" ? "text-purple-600" : "text-gray-500"}`}
+        >
+          <Settings size={20} />
+          <span className="text-xs mt-1">Settings</span>
         </button>
       </div>
     </div>

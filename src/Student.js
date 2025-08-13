@@ -14,6 +14,7 @@ import {
   Bell,
   LogOut,
   Calendar,
+  MessageSquare,
   Menu
 } from 'lucide-react';
 import LoadingSpinner from './components/ui/LoadingSpinner';
@@ -118,6 +119,7 @@ const Student = () => {
                     { name: "Resources", path: "/student/resources", icon: BookOpen },
                     { name: "Job Posting", path: "/student/jobpost", icon: Briefcase },
                     { name: "Applications", path: "/student/applications", icon: FileText },
+                    { name: "My Discussions", path: "/student/my-discussions", icon: MessageSquare },
                     { name: "Calendar", path: "/student/calendar", icon: Calendar },
                     { name: "Coding", path: "/student/coding", icon: Code },
                     { name: "Profile", path: "/student/profile", icon: User },
@@ -268,6 +270,7 @@ const Student = () => {
             { name: 'Notifications', path: '/student/notifications', icon: Bell },
             { name: 'Jobs', path: '/student/jobpost', icon: Briefcase },
             { name: 'Applications', path: '/student/applications', icon: FileText },
+            { name: 'My Discussions', path: '/student/my-discussions', icon: MessageSquare },
             { name: 'Calendar', path: '/student/calendar', icon: Calendar },
             { name: 'Profile', path: '/student/profile', icon: User },
           ].map((item) => {

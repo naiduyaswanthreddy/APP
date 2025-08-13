@@ -5,6 +5,7 @@ import { db, auth, storage } from '../../firebase';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import Loader from '../../loading'; // Add this import at the top
+import { createCompanyActionNotification, createSystemAlertNotification } from '../../utils/notificationHelpers';
 
 import { User, ThumbsUp, MessageSquare, Share2, Award, Briefcase, Code, BookOpen, Gift, Calendar, Filter, Trash2, Edit, Eye, Shield } from 'lucide-react';
 
@@ -243,6 +244,29 @@ const Gallery = () => {
         approvalStatus: 'approved',
         updatedAt: serverTimestamp()
       });
+      
+      // Send notification to student
+      try {
+        await createCompanyActionNotification(
+          'Post Approved',
+          `Your achievement post "${post.title}" has been approved and is now visible in the gallery.`,
+          `/student/gallery`
+        );
+      } catch (error) {
+        console.error('Error sending approval notification:', error);
+      }
+
+      // Send admin notification
+      try {
+        await createSystemAlertNotification(
+          'Post Approved',
+          `Achievement post "${post.title}" by ${post.studentName || 'Student'} has been approved.`,
+          '/admin/gallery'
+        );
+      } catch (error) {
+        console.error('Error sending admin notification:', error);
+      }
+
       toast.success('Post approved successfully!');
       fetchPosts(); // Refresh posts
     } catch (error) {
@@ -257,6 +281,29 @@ const Gallery = () => {
         approvalStatus: 'rejected',
         updatedAt: serverTimestamp()
       });
+
+      // Send notification to student
+      try {
+        await createCompanyActionNotification(
+          'Post Rejected',
+          `Your achievement post "${post.title}" has been rejected. Please review the guidelines and submit again.`,
+          `/student/gallery`
+        );
+      } catch (error) {
+        console.error('Error sending rejection notification:', error);
+      }
+
+      // Send admin notification
+      try {
+        await createSystemAlertNotification(
+          'Post Rejected',
+          `Achievement post "${post.title}" by ${post.studentName || 'Student'} has been rejected.`,
+          '/admin/gallery'
+        );
+      } catch (error) {
+        console.error('Error sending admin notification:', error);
+      }
+
       toast.success('Post rejected successfully!');
       fetchPosts(); // Refresh posts
     } catch (error) {
@@ -271,6 +318,18 @@ const Gallery = () => {
         featured: !post.featured,
         updatedAt: serverTimestamp()
       });
+
+      // Send admin notification
+      try {
+        await createSystemAlertNotification(
+          'Post Featured Status Updated',
+          `Achievement post "${post.title}" by ${post.studentName || 'Student'} has been ${!post.featured ? 'featured' : 'unfeatured'}.`,
+          '/admin/gallery'
+        );
+      } catch (error) {
+        console.error('Error sending admin notification:', error);
+      }
+
       toast.success(`Post ${post.featured ? 'unfeatured' : 'featured'} successfully!`);
       fetchPosts(); // Refresh posts
     } catch (error) {

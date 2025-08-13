@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { collection, getDocs, addDoc, doc, getDoc, updateDoc, deleteDoc, query, where } from 'firebase/firestore';
+import { collection, getDocs, addDoc, doc, updateDoc, deleteDoc, serverTimestamp, query, orderBy, where } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { ToastContainer, toast } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -30,6 +30,7 @@ import {
 import LoadingSpinner from '../ui/LoadingSpinner';
 import NoData from '../ui/NoData';
 import RecruitmentOverview from './RecruitmentOverview';
+import { createCompanyActionNotification, createSystemAlertNotification } from '../../utils/notificationHelpers';
 
 const Companies = () => {
   const [companies, setCompanies] = useState([]);
@@ -86,32 +87,14 @@ const Companies = () => {
         let highestCTCOffered = 0;
         let totalCTCs = 0;
 
+        const { parseCTCToLPA } = require('../../utils/ctc');
         companyJobs.forEach(job => {
-          let ctcValue = 0;
-          if (job.ctc) {
-            // Assuming CTC is in Lakhs Per Annum (LPA) if not specified
-            if (typeof job.ctc === 'string') {
-              const ctcMatch = job.ctc.match(/(\d+(\.\d+)?)\s*LPA/i);
-              if (ctcMatch && ctcMatch[1]) {
-                ctcValue = parseFloat(ctcMatch[1]) * 100000; // Convert LPA to yearly
-              } else {
-                 // Attempt to parse as number and assume yearly if no unit
-                 const numCtc = parseFloat(job.ctc);
-                 if (!isNaN(numCtc)) ctcValue = numCtc;
-              }
-            } else if (typeof job.ctc === 'number') {
-               ctcValue = job.ctc; // Assume number is already yearly or needs no conversion based on app logic
-            }
-          } else if (job.salary) {
-              // Assuming salary is also a yearly figure or similar unit if no complex structure
-               const numSalary = parseFloat(job.salary);
-                 if (!isNaN(numSalary)) ctcValue = numSalary;
-          }
-          if (ctcValue > highestCTCOffered) highestCTCOffered = ctcValue;
-          totalCTCs += ctcValue;
+          const ctcLPA = parseCTCToLPA(job.ctc || job.salary);
+          if (ctcLPA > highestCTCOffered) highestCTCOffered = ctcLPA;
+          totalCTCs += ctcLPA;
         });
 
-        const averageCTCOffered = totalJobsPosted > 0 ? totalCTCs / totalJobsPosted : 0;
+        const averageCTCOffered = totalJobsPosted > 0 ? +(totalCTCs / totalJobsPosted).toFixed(2) : 0;
 
         return {
           ...company,
@@ -135,11 +118,26 @@ const Companies = () => {
     try {
       const newCompany = {
         ...companyData,
-        createdAt: new Date(),
-        updatedAt: new Date()
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        status: 'active',
+        jobPostingsCount: 0,
+        lastJobPosted: null
       };
       
-      await addDoc(collection(db, 'companies'), newCompany);
+      const docRef = await addDoc(collection(db, 'companies'), newCompany);
+
+      // Send admin notification about company addition
+      try {
+        await createCompanyActionNotification(
+          'Company Added',
+          `New company "${companyData.companyName}" has been added to the system.`,
+          `/admin/companies/${docRef.id}`
+        );
+      } catch (error) {
+        console.error('Error sending admin notification:', error);
+      }
+
       toast.success('Company added successfully!');
       setShowAddForm(false);
       resetForm();
@@ -156,8 +154,19 @@ const Companies = () => {
       const companyRef = doc(db, 'companies', editingCompany.id);
       await updateDoc(companyRef, {
         ...companyData,
-        updatedAt: new Date()
+        updatedAt: serverTimestamp()
       });
+
+      // Send admin notification about company update
+      try {
+        await createCompanyActionNotification(
+          'Company Updated',
+          `Company profile for "${companyData.companyName}" has been updated.`,
+          `/admin/companies/${editingCompany.id}`
+        );
+      } catch (error) {
+        console.error('Error sending admin notification:', error);
+      }
       
       toast.success('Company updated successfully!');
       setEditingCompany(null);
@@ -173,6 +182,18 @@ const Companies = () => {
     if (window.confirm('Are you sure you want to delete this company?')) {
       try {
         await deleteDoc(doc(db, 'companies', companyId));
+
+        // Send admin notification about company deletion
+        try {
+          await createCompanyActionNotification(
+            'Company Deleted',
+            `Company has been removed from the system.`,
+            '/admin/companies'
+          );
+        } catch (error) {
+          console.error('Error sending admin notification:', error);
+        }
+
         toast.success('Company deleted successfully!');
         fetchCompanies();
       } catch (error) {
@@ -275,9 +296,10 @@ const Companies = () => {
         // Calculate application statistics
         const stats = {
           totalApplications: allApplications.length,
-          selectedStudentsCount: allApplications.filter(app => app.status === 'selected').length,
+          // Count both 'selected' (pre-offer decision) and 'offer_accepted' as selections
+          selectedStudentsCount: allApplications.filter(app => app.status === 'selected' || app.status === 'offer_accepted').length,
           pendingApplications: allApplications.filter(app => !app.status || app.status === 'pending').length,
-          rejectedApplications: allApplications.filter(app => app.status === 'rejected').length,
+          rejectedApplications: allApplications.filter(app => app.status === 'rejected' || app.status === 'offer_rejected').length,
           shortlistedApplications: allApplications.filter(app => app.status === 'shortlisted').length
         };
         
@@ -424,9 +446,9 @@ const Companies = () => {
               {activeTab === 'overview' && (
                 <RecruitmentOverview
                   companyId={company.id}
-                  totalJobsPosted={company.totalJobsPosted}
-                  highestCTCOffered={company.highestCTCOffered}
-                  averageCTCOffered={company.averageCTCOffered}
+                  companyName={company.companyName}
+                  jobs={companyJobs}
+                  applications={companyApplications}
                 />
               )}
 

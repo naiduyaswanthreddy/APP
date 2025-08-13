@@ -148,8 +148,13 @@ const Signup = () => {
               <select name="department" onChange={handleChange} className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none" required>
                 <option value="">Select Department</option>
                 <option value="CSE">CSE</option>
-                <option value="AIE">AIE</option>
+                <option value="IT">IT</option>
                 <option value="ECE">ECE</option>
+                <option value="EEE">EEE</option>
+                <option value="ME">ME</option>
+                <option value="CE">CE</option>
+                <option value="CHE">CHE</option>
+                <option value="AIE">AIE</option>
                 <option value="CCE">CCE</option>
               </select>
               <input name="github" type="text" placeholder="GitHub Profile Link" onChange={handleChange} className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none" />

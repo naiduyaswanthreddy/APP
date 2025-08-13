@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import { doc, getDoc } from 'firebase/firestore';
+import { db, auth } from '../../../../firebase';
 import { Reorder } from 'framer-motion';
 // Remove this import: import { BrowserRouter as Router } from 'react-router-dom';
 import LeftNavbar from './components/leftNavbar';
@@ -55,6 +57,7 @@ const DraggableComponent = ({ componentName, Component, onAdd, onEdit, onDelete 
 export default function App() {
   const [selectedComponents, setSelectedComponents] = useState([]);
   const [editDeleteVisible, setEditDeleteVisible] = useState({});
+  const [editingKey, setEditingKey] = useState('');
 
   useEffect(() => {
     const savedComponents = JSON.parse(localStorage.getItem('selectedComponents'));
@@ -65,6 +68,48 @@ export default function App() {
     if (savedVisibility) {
       setEditDeleteVisible(savedVisibility);
     }
+  }, []);
+
+  // Prefill from student profile when available
+  useEffect(() => {
+    const prefillFromProfile = async () => {
+      try {
+        const user = auth.currentUser;
+        if (!user) return;
+        const snap = await getDoc(doc(db, 'students', user.uid));
+        if (!snap.exists()) return;
+        const s = snap.data() || {};
+        // About Me
+        const aboutKey = 'About Me';
+        const hasAbout = !!localStorage.getItem(aboutKey);
+        if (!hasAbout) {
+          localStorage.setItem(aboutKey, JSON.stringify({
+            name: s.name || s.email || '',
+            mobile: s.mobile || '',
+            email: s.email || '',
+            linkedin: s.linkedin || '',
+            github: s.github || ''
+          }));
+        }
+        // Education (best-effort)
+        const eduKey = 'Education';
+        const hasEdu = !!localStorage.getItem(eduKey);
+        if (!hasEdu) {
+          const entries = [
+            {
+              institution: s.collegeName || 'Your College',
+              degree: s.program ? `${s.program} ${s.department ? '(' + s.department + ')' : ''}` : (s.department || ''),
+              period: s.passoutYear ? `${(parseInt(s.passoutYear,10)-4) || ''}-${s.passoutYear}` : '',
+              score: s.cgpa ? `CGPA ${s.cgpa}` : ''
+            }
+          ];
+          localStorage.setItem(eduKey, JSON.stringify({ entries }));
+        }
+      } catch {
+        // ignore prefill errors
+      }
+    };
+    prefillFromProfile();
   }, []);
 
   const handleMenuClick = (componentName) => {
@@ -84,16 +129,9 @@ export default function App() {
   };
 
   const handleEdit = (componentName) => {
-    console.log(`Editing ${componentName}`);
+    setEditingKey(componentName);
     localStorage.setItem('edit', componentName);
-    
-    // Instead of reloading the page, force a re-render
-    // by updating a state variable
     setSelectedComponents([...selectedComponents]);
-    
-    // Alternatively, you could use a dedicated state variable for editing
-    // const [editingComponent, setEditingComponent] = useState(null);
-    // setEditingComponent(componentName);
   };
 
   const handleDelete = (componentName) => {
@@ -129,7 +167,7 @@ export default function App() {
             onReorder={handleReorder}
             className="space-y-4"
           >
-            {selectedComponents.map((componentName) => {
+                {selectedComponents.map((componentName) => {
               const Component = componentMap[componentName];
               return (
                 <DraggableComponent
@@ -139,6 +177,7 @@ export default function App() {
                   onAdd={handleMenuClick}
                   onEdit={handleEdit}
                   onDelete={handleDelete}
+                      editingKey={editingKey}
                 />
               );
             })}
