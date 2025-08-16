@@ -88,18 +88,34 @@ const Applications = () => {
             ? Math.round((matchedSkills.length / requiredSkills.length) * 100)
             : 0;
 
-          // Determine current round
-          const rounds = Array.isArray(jobData.rounds) ? jobData.rounds : jobData.hiringWorkflow || [];
-          const currentRoundIndex = jobData.currentRoundIndex || 0;
-          const currentRound = rounds[currentRoundIndex]?.name || rounds[currentRoundIndex]?.roundName || 'N/A';
+          // Determine current round robustly (supports both index and name fields)
+          const rounds = Array.isArray(jobData.rounds) ? jobData.rounds : (jobData.hiringWorkflow || []);
+          // Prefer stored index; if missing, derive from stored currentRound name
+          let currentRoundIndex = typeof jobData.currentRoundIndex === 'number' ? jobData.currentRoundIndex : 0;
+          if ((currentRoundIndex == null || Number.isNaN(currentRoundIndex)) && jobData.currentRound) {
+            const idxFromName = rounds.findIndex(r => (r.name || r.roundName) === jobData.currentRound);
+            currentRoundIndex = idxFromName >= 0 ? idxFromName : 0;
+          }
+          const currentRound =
+            rounds[currentRoundIndex]?.name ||
+            rounds[currentRoundIndex]?.roundName ||
+            jobData.currentRound || 'N/A';
+
+          // Normalize applied date to a Date object for consistent rendering/sorting
+          const appliedAt = applicationData.applied_at?.toDate
+            ? applicationData.applied_at.toDate()
+            : (applicationData.applied_at
+                ? new Date(applicationData.applied_at)
+                : null);
 
           applicationsData.push({
             id: docSnapshot.id,
             ...applicationData,
-            job: jobData,
+            job: { ...jobData, rounds },
             skillMatch: skillMatch,
             currentRound: currentRound,
             rounds: applicationData.student?.rounds || {},
+            appliedAt,
             offerDecision: applicationData.offerDecision || null,
             decisionDate: applicationData.decisionDate || null
           });
@@ -142,13 +158,20 @@ const Applications = () => {
   const getStatusProgressPoints = (rounds, currentRound, jobRounds) => {
     if (!Array.isArray(jobRounds)) return [];
 
-    const currentIndex = jobRounds.findIndex(r => (r.name || r.roundName) === currentRound);
+    // Determine the highest round this student has actually completed (shortlisted/selected)
+    let highestCompletedIndex = -1;
+    jobRounds.forEach((round, index) => {
+      const roundName = round.name || round.roundName || `Round ${index + 1}`;
+      const status = rounds?.[roundName];
+      if (status === 'shortlisted' || status === 'selected') {
+        highestCompletedIndex = index;
+      }
+    });
 
     return jobRounds.map((round, index) => {
       const roundName = round.name || round.roundName || `Round ${index + 1}`;
-
       return {
-        completed: rounds[roundName] === 'shortlisted' || index < currentIndex,
+        completed: index <= highestCompletedIndex,
         stageName: roundName,
         roundLabel: `R${index + 1}`
       };
@@ -160,23 +183,58 @@ const Applications = () => {
       return 0;
     }
 
-    let lastShortlistedIndex = -1;
+    // Progress should reflect the student's own progression, not the job's global round
+    // Advance to the furthest evaluated round (shortlisted/selected/rejected/not_shortlisted)
+    let highestCompletedIndex = -1; // shortlisted or selected
+    let highestEvaluatedIndex = -1; // includes rejected/not_shortlisted
     jobRounds.forEach((round, index) => {
-      const roundName = round.name || round.roundName;
-      if (rounds[roundName] === 'shortlisted') {
-        lastShortlistedIndex = index;
+      const roundName = round.name || round.roundName || `Round ${index + 1}`;
+      const status = rounds?.[roundName];
+      if (status === 'shortlisted' || status === 'selected') {
+        highestCompletedIndex = index;
+        highestEvaluatedIndex = Math.max(highestEvaluatedIndex, index);
+      } else if (status === 'rejected' || status === 'not_shortlisted') {
+        highestEvaluatedIndex = Math.max(highestEvaluatedIndex, index);
       }
     });
 
-    const currentIndex = jobRounds.findIndex(r => (r.name || r.roundName) === currentRound);
-    const effectiveIndex = lastShortlistedIndex >= 0 ? lastShortlistedIndex : (currentIndex >= 0 ? currentIndex : -1);
-
+    const effectiveIndex = Math.max(highestCompletedIndex, highestEvaluatedIndex);
     if (effectiveIndex < 0) {
       return 0;
     }
 
     const progress = (effectiveIndex / (jobRounds.length - 1)) * 100;
     return Math.min(100, Math.max(0, progress));
+  };
+
+  // Decide latest evaluated stage and status based on job's round order
+  const DECIDED_STATUSES = new Set([
+    'shortlisted', 'selected', 'rejected', 'not_shortlisted',
+    'waitlisted', 'interview_scheduled', 'offer_accepted', 'offer_rejected', 'withdrawn'
+  ]);
+
+  const getLatestDecidedStage = (rounds, jobRounds) => {
+    if (!Array.isArray(jobRounds)) return null;
+    let latest = null;
+    jobRounds.forEach((round, index) => {
+      const roundName = round.name || round.roundName || `Round ${index + 1}`;
+      const status = rounds?.[roundName];
+      if (DECIDED_STATUSES.has(status)) {
+        latest = { roundName, status, index };
+      }
+    });
+    return latest;
+  };
+
+  // Determine if withdraw should be visible: hide if any round already shortlisted/selected
+  const canWithdraw = (application) => {
+    const rounds = application.rounds || {};
+    const hasShortlistedOrSelected = Object.values(rounds).some(s => s === 'shortlisted' || s === 'selected');
+    if (hasShortlistedOrSelected) return false;
+    const currStatus = rounds?.[application.currentRound];
+    if (!currStatus) return false;
+    if (application.status === 'withdrawn') return false;
+    return ['pending', 'under_review'].includes(currStatus);
   };
 
   const handleAcceptOffer = async (applicationId) => {
@@ -305,15 +363,16 @@ const Applications = () => {
         return;
       }
 
-      // Update application status
       const applicationRef = doc(db, 'applications', applicationId);
+
+      // First mark as withdrawn for audit trails/notifications
       await updateDoc(applicationRef, {
         status: 'withdrawn',
         withdrawnAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       });
 
-      // Send notification to student
+      // Notifications
       try {
         await createStatusUpdateNotification(auth.currentUser.uid, {
           job: { position: application.job?.position || 'Unknown Position' },
@@ -323,7 +382,6 @@ const Applications = () => {
         console.error('Error sending withdrawal notification:', error);
       }
 
-      // Send admin notification
       try {
         await createSystemAlertNotification(
           'Application Withdrawn',
@@ -334,8 +392,18 @@ const Applications = () => {
         console.error('Error sending admin notification:', error);
       }
 
-      toast.success('Application withdrawn successfully');
-      fetchApplications();
+      // Then delete the application document as requested
+      try {
+        await deleteDoc(applicationRef);
+      } catch (error) {
+        console.error('Error deleting withdrawn application:', error);
+        // Continue; status is already set to withdrawn
+      }
+
+      // Update UI: remove from local state
+      setApplications(prev => prev.filter(app => app.id !== applicationId));
+
+      toast.success('Application withdrawn and removed successfully');
     } catch (error) {
       console.error('Error withdrawing application:', error);
       toast.error('Failed to withdraw application');
@@ -377,7 +445,7 @@ const Applications = () => {
         // Add to placed students collection
         await addDoc(collection(db, 'placed_students'), {
           studentId: auth.currentUser.uid,
-          jobId: application.job_id,
+          jobId: application.job_id || application.jobId || application.job?.id || null,
           applicationId: applicationId,
           companyName: application.job.company,
           jobTitle: application.job.position,
@@ -464,18 +532,30 @@ const Applications = () => {
 
   const filteredApplications = applications
     .filter(app => filter === 'all' ? true : app.rounds[app.currentRound] === filter)
+    .filter(app => {
+      if (!searchTerm.trim()) return true;
+      const q = searchTerm.toLowerCase();
+      return (
+        app.job?.position?.toLowerCase().includes(q) ||
+        app.job?.company?.toLowerCase().includes(q) ||
+        app.job?.location?.toLowerCase().includes(q) ||
+        app.job?.skills?.join(',').toLowerCase().includes(q)
+      );
+    })
     .sort((a, b) => {
       if (a.rounds[a.currentRound] === 'withdrawn' && b.rounds[b.currentRound] !== 'withdrawn') return 1;
       if (a.rounds[a.currentRound] !== 'withdrawn' && b.rounds[b.currentRound] === 'withdrawn') return -1;
       
-      if (sortBy === 'newest') return b.applied_at - a.applied_at;
-      if (sortBy === 'oldest') return a.applied_at - b.applied_at;
+      const aTime = a.appliedAt?.getTime?.() || 0;
+      const bTime = b.appliedAt?.getTime?.() || 0;
+      if (sortBy === 'newest') return bTime - aTime;
+      if (sortBy === 'oldest') return aTime - bTime;
       if (sortBy === 'company') return a.job.company.localeCompare(b.job.company);
       return 0;
     });
 
   return (
-    <div className="px-3 sm:px-6 py-6 space-y-6">
+    <div className="px-0 sm:px-0 py-2 space-y-6">
       <ToastContainer />
       
       {/* Placement Banner */}
@@ -485,8 +565,17 @@ const Applications = () => {
         </div>
       )}
 
-      {/* Filters */}
-      <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 mb-6">
+      {/* Search + Filters */}
+      <div className="flex flex-col md:flex-row md:items-center gap-3 md:gap-4 mb-6">
+        <div className="w-full md:w-80">
+          <input
+            type="text"
+            value={searchTerm}
+            onChange={(e)=>setSearchTerm(e.target.value)}
+            placeholder="Search by role, company, location, or skill..."
+            className="w-full p-2 border rounded"
+          />
+        </div>
         <select 
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
@@ -556,9 +645,25 @@ const Applications = () => {
                 <h3 className="text-xl font-medium">{application.job.position}</h3>
                 <p className="text-gray-600">{application.job.company}</p>
               </div>
-              <div className={`px-3 py-1 rounded-full text-sm ${STATUS_COLORS[application.status] || STATUS_COLORS[application.rounds?.[application.currentRound]] || 'bg-gray-100 text-gray-800'}`}>
-                {STATUS_LABELS[application.status] || STATUS_LABELS[application.rounds?.[application.currentRound]] || 'Unknown Status'}
-              </div>
+
+
+            {/* Latest Decided Status (round name under it) */}
+            {(() => {
+              const decided = getLatestDecidedStage(application.rounds, application.job.rounds);
+              if (!decided) return null;
+              return (
+                <div className="mb-3">
+                  <div className={`inline-flex px-3 py-1 rounded-full text-sm font-medium ${STATUS_COLORS[decided.status] || 'bg-gray-100 text-gray-800'}`}>
+                    {STATUS_LABELS[decided.status] || decided.status}
+                  </div>
+                  <div className="text-xs text-gray-600 mt-1">{decided.roundName}</div>
+                </div>
+              );
+            })()}
+
+
+
+
             </div>
 
             {/* Offer Decision Panel */}
@@ -603,20 +708,16 @@ const Applications = () => {
               </div>
             </div>
 
+
             {/* Application Details */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
               <div>
                 <p className="text-sm text-gray-600">Applied on</p>
                 <p className="font-medium">
-                  {application.applied_at?.toDate().toLocaleDateString()}
+                  {application.appliedAt ? application.appliedAt.toLocaleString() : '—'}
                 </p>
               </div>
-              <div>
-                <p className="text-sm text-gray-600">Application Deadline</p>
-                <p className="font-medium">
-                  {new Date(application.job.deadline).toLocaleDateString()}
-                </p>
-              </div>
+              {/* Removed Application Deadline display as requested */}
             </div>
 
             {/* Action Buttons */}
@@ -633,7 +734,7 @@ const Applications = () => {
                 </button>
               )}
 
-              {['pending', 'under_review'].includes(application.rounds[application.currentRound]) && (
+              {canWithdraw(application) && (
                 <button 
                   onClick={() => handleWithdraw(application.id)}
                   className="px-4 py-2 text-red-600 hover:bg-red-50 rounded"

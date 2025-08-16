@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Bell, Briefcase, FileText, Calendar, User } from 'lucide-react';
+import { Bell, Briefcase, FileText, Calendar, User, MessageSquare } from 'lucide-react';
 
 const MobileBottomNav = () => {
   const location = useLocation();
@@ -9,12 +9,12 @@ const MobileBottomNav = () => {
     { name: 'Notifications', path: '/student/notifications', icon: Bell },
     { name: 'Jobs', path: '/student/jobpost', icon: Briefcase },
     { name: 'Applications', path: '/student/applications', icon: FileText },
-    { name: 'Calendar', path: '/student/calendar', icon: Calendar },
+    { name: 'My Discussions', path: '/student/my-discussions', icon: MessageSquare },
     { name: 'Profile', path: '/student/profile', icon: User },
   ];
 
   return (
-    <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 z-50 md:hidden safe-bottom">
+    <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 z-[60] md:hidden safe-bottom">
       <div className="flex justify-around items-center h-16">
         {navItems.map((item) => {
           const Icon = item.icon;
@@ -32,7 +32,7 @@ const MobileBottomNav = () => {
               aria-label={item.name}
             >
               <Icon size={20} />
-              <span className="text-xs mt-1">{item.name}</span>
+              <span className="text-xs mt-1 text-center w-full">{item.name}</span>
             </Link>
           );
         })}

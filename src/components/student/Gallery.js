@@ -245,7 +245,7 @@ const Gallery = () => {
   });
 
   return (
-    <div className="container mx-auto px-4 py-6">
+    <div className="container mx-auto px-0 py-6">
       <ToastContainer position="top-right" autoClose={3000} />
       
       {/* Header with Create Post Button */}

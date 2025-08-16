@@ -622,8 +622,18 @@ const JobPost = () => {
         return;
       }
 
+      // Merge any pending new external link into the array and omit transient fields
+      const { newExternalLinkLabel, newExternalLinkUrl, newExternalLinkMandatory, ...restJobForm } = jobForm;
+      const externalLinksToSave = [
+        ...(Array.isArray(restJobForm.externalLinks) ? restJobForm.externalLinks : []),
+        ...(newExternalLinkLabel && newExternalLinkUrl
+          ? [{ label: newExternalLinkLabel, url: newExternalLinkUrl, mandatoryBeforeApply: !!newExternalLinkMandatory }]
+          : [])
+      ];
+
       const jobData = {
-        ...jobForm,
+        ...restJobForm,
+        externalLinks: externalLinksToSave,
         created_by: user.uid,
         created_at: serverTimestamp(),
         updated_at: serverTimestamp(),
@@ -631,6 +641,19 @@ const JobPost = () => {
         applicationsCount: 0,
         filledPositions: 0
       };
+
+      // Prevent duplicate posts by checking for a similar recent job
+      const existingDocs = await getDocs(query(collection(db, 'jobs'), where('company', '==', jobForm.company), where('position', '==', jobForm.position)));
+      if (!existingDocs.empty) {
+        const anyDoc = existingDocs.docs[0];
+        const existing = anyDoc.data();
+        const existingDeadline = existing.deadline ? new Date(existing.deadline) : null;
+        if (!existingDeadline || (jobForm.deadline && Math.abs(new Date(jobForm.deadline) - existingDeadline) < 1000)) {
+          toast.error('This job appears to be already posted. Aborting duplicate post.');
+          setIsSubmitting(false);
+          return;
+        }
+      }
 
       // Add job to database
       const docRef = await addDoc(collection(db, 'jobs'), jobData);
@@ -751,7 +774,7 @@ const JobPost = () => {
 
   const handleUpdate = async (e) => {
     e.preventDefault();
-    if (!validateForm() || !editingJob) return;
+    if (!validateForm() || (!editingJob && !editingJobId)) return;
 
     try {
       setIsSubmitting(true);
@@ -761,14 +784,25 @@ const JobPost = () => {
         return;
       }
 
+      // Merge any pending new external link into the array and omit transient fields
+      const { newExternalLinkLabel, newExternalLinkUrl, newExternalLinkMandatory, ...restJobForm } = jobForm;
+      const externalLinksToSave = [
+        ...(Array.isArray(restJobForm.externalLinks) ? restJobForm.externalLinks : []),
+        ...(newExternalLinkLabel && newExternalLinkUrl
+          ? [{ label: newExternalLinkLabel, url: newExternalLinkUrl, mandatoryBeforeApply: !!newExternalLinkMandatory }]
+          : [])
+      ];
+
       const updateData = {
-        ...jobForm,
+        ...restJobForm,
+        externalLinks: externalLinksToSave,
         updated_by: user.uid,
         updated_at: serverTimestamp()
       };
 
       // Update job in database
-      const jobRef = doc(db, 'jobs', editingJob.id);
+      const jobIdToUpdate = editingJob?.id || editingJobId;
+      const jobRef = doc(db, 'jobs', jobIdToUpdate);
       await updateDoc(jobRef, updateData);
 
       // Send admin notification about job update
@@ -776,7 +810,7 @@ const JobPost = () => {
         await createJobEventNotification(
           'Job Posting Updated',
           `Job posting "${jobForm.position}" at ${jobForm.company} has been updated successfully.`,
-          `/admin/jobs/${editingJob.id}`
+          `/admin/jobs/${jobIdToUpdate}`
         );
       } catch (error) {
         console.error('Error sending admin notification:', error);
@@ -786,7 +820,7 @@ const JobPost = () => {
       resetForm();
       setEditingJob(null);
       if (onJobUpdated) {
-        onJobUpdated(editingJob.id);
+        onJobUpdated(jobIdToUpdate);
       }
     } catch (error) {
       console.error('Error updating job posting:', error);
@@ -852,7 +886,9 @@ const JobPost = () => {
       setEditingJobId(jobId);
       const jobDoc = await getDoc(doc(db, 'jobs', jobId));
       if (jobDoc.exists()) {
-        setJobForm(jobDoc.data());
+        const data = jobDoc.data();
+        setJobForm(data);
+        setEditingJob({ id: jobId, ...data });
         setActiveTab('create');
         window.scrollTo(0, 0);
       }
@@ -2296,7 +2332,7 @@ const JobPost = () => {
           )}
           <div className="flex flex-wrap gap-4">
             <button
-              onClick={handleSubmit}
+              onClick={editingJobId ? handleUpdate : handleSubmit}
               disabled={isSubmitting}
               className="flex-1 py-3 bg-blue-600 text-white text-lg font-semibold rounded-lg hover:bg-blue-700 transition shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
             >

@@ -36,6 +36,7 @@ import ManageApplications from './components/admin/Job_Applications/ManageApplic
 import JobApplications from './components/admin/Job_Applications/JobApplications';
 import Students from "./components/admin/Students";
 import AdminChat from "./components/admin/AdminChat"; // Add this import
+import AdminDashboard from "./components/admin/Dashboard";
 
 // Add import for Notifications
 import AdminNotifications from "./components/admin/Notifications";
@@ -65,12 +66,13 @@ function AuthHandler() {
   const [user, setUser] = useState(null);
   const [role, setRole] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [networkError, setNetworkError] = useState(false);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (user) {
         try {
-          const token = await getIdTokenResult(user, true);
+          const token = await getIdTokenResult(user);
           const claimRole = token.claims.role || token.claims.userRole || localStorage.getItem('userRole');
           // Fetch and cache rollNumber for students
           try {
@@ -101,6 +103,9 @@ function AuthHandler() {
         } catch (e) {
           setUser(user);
           setRole(null);
+          if (e?.code === 'auth/network-request-failed') {
+            setNetworkError(true);
+          }
         }
       } else {
         // Clear everything if no user
@@ -140,7 +145,13 @@ function AuthHandler() {
   };
 
   return (
-    <Routes>
+    <>
+      {networkError && (
+        <div className="fixed top-0 left-0 right-0 z-50 bg-red-600 text-white text-sm py-2 px-4 text-center">
+          Network error while verifying session. Please check your connection and refresh this page.
+        </div>
+      )}
+      <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/signup" element={<Signup />} />
       
@@ -150,7 +161,8 @@ function AuthHandler() {
           <Admin />
         </ProtectedRoute>
       }>
-        <Route index element={<AdminProfile />} />
+        <Route index element={<AdminDashboard />} />
+        <Route path="dashboard" element={<AdminDashboard />} />
         <Route path="analytics" element={<AdminAnalytics />} />
         <Route path="resources" element={<AdminResources />} />
         <Route path="jobpost" element={<AdminJobPost />} />
@@ -195,7 +207,8 @@ function AuthHandler() {
         // Add this route in the student routes section (around line 155)
         <Route path="calendar" element={<StudentCalendar />} />
       </Route>
-    </Routes>
+      </Routes>
+    </>
   );
 }
 

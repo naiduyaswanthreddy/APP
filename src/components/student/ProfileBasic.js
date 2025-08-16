@@ -464,7 +464,7 @@ const ProfileBasic = ({ userData: propUserData, isAdminView, onUserDataChange })
   <h3 className="text-lg font-semibold flex items-center gap-2 mb-4 text-gray-800 border-b pb-2">
     <Mail size={18} /> Contact
   </h3>
-  <div className="grid sm:grid-cols-2 gap-5">
+  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
     <div>
       <div className="text-sm font-semibold text-emerald-700">Email</div>
       {isEditing ? (
@@ -481,7 +481,7 @@ const ProfileBasic = ({ userData: propUserData, isAdminView, onUserDataChange })
         <div className="text-lg text-gray-800 break-words">{propUserData.mobile || '-'}</div>
       )}
     </div>
-    <div className="col-span-2">
+    <div className="sm:col-span-2">
       <div className="text-sm font-semibold text-emerald-700">LinkedIn</div>
       {isEditing ? (
         <input type="text" className="text-lg text-gray-800 border rounded px-2 py-1 w-full" value={editData.linkedinProfile} onChange={e => setEditData({ ...editData, linkedinProfile: e.target.value })} />

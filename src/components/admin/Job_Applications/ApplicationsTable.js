@@ -116,24 +116,20 @@ const TruncatedAnswer = ({ text }) => {
 const ApplicationsTable = ({
   loading,
   filteredApplications,
-  applications,
-  setApplications,
-  visibleColumns,
+  selectedApplications,
+  setSelectedApplications,
+  handleStudentClick,
+  statusConfig,
   openDropdownId,
   setOpenDropdownId,
   dropdownPosition,
   setDropdownPosition,
   handleStatusUpdate,
-  handleSaveFeedback,
-  handleViewAnswers,
-  handleViewProfile,
-  handleViewResume,
-  statusConfig,
+  visibleColumns,
   currentRound,
   screeningQuestions = []
 }) => {
-  const [selectedRows, setSelectedRows] = useState(new Set());
-  const [selectedApplications, setSelectedApplications] = useState([]);
+
   const [undoStack, setUndoStack] = useState([]);
   const [showUndoSnackbar, setShowUndoSnackbar] = useState(false);
   const [lastAction, setLastAction] = useState(null);
@@ -152,9 +148,9 @@ const ApplicationsTable = ({
   };
 
   // Handle student click
-  const handleStudentClick = (student) => {
-    if (handleViewProfile) {
-      handleViewProfile(student);
+  const handleStudentClickLocal = (student) => {
+    if (handleStudentClick) {
+      handleStudentClick(student);
     }
   };
 
@@ -177,7 +173,7 @@ const ApplicationsTable = ({
         <div className="w-12 p-3">
           <input
             type="checkbox"
-            checked={selectedRows.has(application.id)}
+            checked={selectedApplications.includes(application.id)}
             onChange={(e) => handleRowSelection(application.id, e.target.checked)}
             className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
           />
@@ -201,9 +197,10 @@ const ApplicationsTable = ({
                       />
                     </div>
                     <div className="ml-4">
-                      <div className="text-sm font-medium text-gray-900">
-                        {application.student?.name || 'N/A'}
-                      </div>
+                                        <div className="text-sm font-medium text-gray-900 cursor-pointer hover:text-blue-600"
+                    onClick={() => handleStudentClickLocal(application.student)}>
+                    {application.student?.name || 'N/A'}
+                  </div>
                       <div className="text-sm text-gray-500">
                         {application.student?.rollNumber || 'N/A'}
                       </div>
@@ -310,12 +307,12 @@ const ApplicationsTable = ({
         })}
       </div>
     );
-  }, [memoizedApplications, selectedRows, openDropdownId, dropdownPosition, visibleColumns, statusConfig]);
+  }, [memoizedApplications, selectedApplications, openDropdownId, dropdownPosition, visibleColumns, statusConfig]);
 
   // Enhanced status update with undo functionality
   const handleStatusUpdateWithUndo = async (applicationId, newStatus) => {
     try {
-      const application = applications.find(app => app.id === applicationId);
+      const application = filteredApplications.find(app => app.id === applicationId);
       if (!application) {
         toast.error('Application not found');
         return;
@@ -355,7 +352,7 @@ const ApplicationsTable = ({
     if (undoStack.length === 0 || !lastAction) return;
 
     try {
-      const application = applications.find(app => app.id === lastAction.applicationId);
+      const application = filteredApplications.find(app => app.id === lastAction.applicationId);
       if (!application) return;
 
       // Revert the status
@@ -375,21 +372,19 @@ const ApplicationsTable = ({
 
   // Handle row selection
   const handleRowSelection = (applicationId, isSelected) => {
-    const newSelectedRows = new Set(selectedRows);
     if (isSelected) {
-      newSelectedRows.add(applicationId);
+      setSelectedApplications(prev => [...prev, applicationId]);
     } else {
-      newSelectedRows.delete(applicationId);
+      setSelectedApplications(prev => prev.filter(id => id !== applicationId));
     }
-    setSelectedRows(newSelectedRows);
   };
 
   // Handle select all
   const handleSelectAll = (isSelected) => {
     if (isSelected) {
-      setSelectedRows(new Set(memoizedApplications.map(app => app.id)));
+      setSelectedApplications(memoizedApplications.map(app => app.id));
     } else {
-      setSelectedRows(new Set());
+      setSelectedApplications([]);
     }
   };
 
@@ -410,10 +405,10 @@ const ApplicationsTable = ({
     if (!confirmed) return;
 
     try {
-      for (const applicationId of selectedRows) {
+      for (const applicationId of selectedApplications) {
         await handleStatusUpdateWithUndo(applicationId, status);
       }
-      setSelectedRows(new Set()); // Clear selected rows after bulk update
+      setSelectedApplications([]); // Clear selected applications after bulk update
       toast.success(`All selected applications updated to ${statusConfig[status]?.label || status}`);
     } catch (error) {
       console.error('Error updating bulk status:', error);
@@ -784,6 +779,7 @@ const ApplicationsTable = ({
       if (column.startsWith('q')) {
         const idx = parseInt(column.replace('q', '')) - 1;
         const ans = application.screening_answers && application.screening_answers[idx];
+        console.log(`Screening answer for Q${idx + 1}:`, ans, 'from application:', application.id);
         cells.push(
           <td key={column} className="px-4 py-4 whitespace-nowrap text-center">
             {ans !== undefined && ans !== null && ans !== '' ? ans : <span className="text-gray-400">N/A</span>}

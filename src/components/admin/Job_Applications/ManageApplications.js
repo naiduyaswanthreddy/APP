@@ -160,22 +160,39 @@ const updateCompanyStats = async (companyName) => {
       for (const jobDoc of jobsSnapshot.docs) {
         const jobData = jobDoc.data();
         const applicationsRef = collection(db, 'applications');
-        const applicationsQuery = query(applicationsRef, where('job_id', '==', jobDoc.id));
-        const applicationsSnapshot = await getDocs(applicationsQuery);
+        // Query for both job_id and jobId fields to ensure we get all applications
+        const applicationsQuery1 = query(applicationsRef, where('job_id', '==', jobDoc.id));
+        const applicationsQuery2 = query(applicationsRef, where('jobId', '==', jobDoc.id));
+        const applicationsSnapshot1 = await getDocs(applicationsQuery1);
+        const applicationsSnapshot2 = await getDocs(applicationsQuery2);
+        
+        // Combine results and remove duplicates
+        const allApplications = [...applicationsSnapshot1.docs, ...applicationsSnapshot2.docs];
+        const uniqueApplications = allApplications.filter((doc, index, self) => 
+          index === self.findIndex(d => d.id === doc.id)
+        );
 
         const applications = [];
-        for (const appDoc of applicationsSnapshot.docs) {
+        for (const appDoc of uniqueApplications) {
           const appData = appDoc.data();
-          const studentDoc = await getDoc(doc(db, 'students', appData.student_id));
-          const studentData = studentDoc.exists() ? studentDoc.data() : {};
+          const studentId = appData.student_id || appData.studentId;
+          let studentData = {};
+          if (studentId) {
+            try {
+              const sDoc = await getDoc(doc(db, 'students', studentId));
+              studentData = sDoc.exists() ? sDoc.data() : {};
+            } catch (e) {
+              console.warn('Failed to fetch student for application', appDoc.id, 'studentId:', studentId, e);
+            }
+          }
 
           applications.push({
             id: appDoc.id,
             ...appData,
             student: {
-              name: studentData.name || 'N/A',
-              rollNumber: studentData.rollNumber || 'N/A',
-              department: studentData.department || 'N/A',
+              name: studentData.name || appData.student_name || 'N/A',
+              rollNumber: studentData.rollNumber || appData.student_rollNumber || 'N/A',
+              department: studentData.department || appData.student_department || 'N/A',
             }
           });
         }
@@ -240,8 +257,10 @@ const updateCompanyStats = async (companyName) => {
   const filteredJobs = jobs
     .filter(job => {
       if (searchTerm) {
+        const company = String(job.company || '').toLowerCase();
+        const position = String(job.position || '').toLowerCase();
         const lowerSearch = searchTerm.toLowerCase();
-        return job.company.toLowerCase().includes(lowerSearch) || job.position.toLowerCase().includes(lowerSearch);
+        return company.includes(lowerSearch) || position.includes(lowerSearch);
       }
       return true;
     })
@@ -253,7 +272,8 @@ const updateCompanyStats = async (companyName) => {
     })
     .filter(job => {
       if (selectedYear) {
-        return job.eligibleBatch?.includes(selectedYear) || false;
+        const batch = Array.isArray(job.eligibleBatch) ? job.eligibleBatch : [];
+        return batch.includes(selectedYear);
       }
       return true;
     })

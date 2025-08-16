@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { collection, getDocs, query, orderBy, addDoc, doc, getDoc, where, serverTimestamp } from 'firebase/firestore';
+import { collection, getDocs, query, orderBy, addDoc, doc, getDoc,deleteDoc, where, serverTimestamp } from 'firebase/firestore';
 import { db, auth } from '../../firebase';
 import { ToastContainer, toast } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import { createJobPostingNotification } from '../../utils/notificationHelpers';
 import { useNavigate } from 'react-router-dom';
 import Loader from '../../loading'; // Add this import at the top
+import { getCurrentStudentRollNumber } from '../../utils/studentIdentity';
 
 const JobCards = () => {
   const navigate = useNavigate();
@@ -159,28 +160,81 @@ const JobCards = () => {
   const fetchAppliedJobs = async () => {
     try {
       const user = auth.currentUser;
-      if (user) {
-        const applicationsRef = collection(db, 'applications');
-        const q = query(applicationsRef, where('student_id', '==', user.uid));
-        const querySnapshot = await getDocs(q);
-        
-        // Store job IDs and statuses
-        const jobIds = [];
-        const statuses = {};
-        
-        querySnapshot.docs.forEach(doc => {
-          const data = doc.data();
-          jobIds.push(data.job_id);
-          statuses[data.job_id] = data.status;
-        });
-        
-        setAppliedJobs(jobIds);
-        setApplicationStatuses(statuses);
-      }
+      if (!user) return;
+
+      const applicationsRef = collection(db, 'applications');
+      const roll = await getCurrentStudentRollNumber();
+      const q1 = roll
+        ? query(applicationsRef, where('student_rollNumber', '==', roll))
+        : query(applicationsRef, where('student_id', '==', user.uid));
+      const querySnapshot = await getDocs(q1);
+
+      const jobIds = [];
+      const statuses = {};
+
+      querySnapshot.docs.forEach(ds => {
+        const data = ds.data() || {};
+        const jid = data.jobId || data.job_id; // support both keys
+        if (jid) {
+          jobIds.push(jid);
+          statuses[jid] = data.status;
+        }
+      });
+
+      setAppliedJobs(jobIds);
+      setApplicationStatuses(statuses);
     } catch (error) {
       toast.error("Error fetching applications!");
     }
   };
+
+
+
+
+
+
+// Function to unsave a job
+const handleUnsaveJob = async (jobId) => {
+  try {
+    const user = auth.currentUser;
+    if (!user) return;
+
+    // Find the saved job entry for this user and job
+    const savedJobsQuery = query(
+      collection(db, "saved_jobs"),
+      where("job_id", "==", jobId),
+      where("student_id", "==", user.uid)
+    );
+
+    const querySnapshot = await getDocs(savedJobsQuery);
+
+    // Delete all matching saved job docs (usually only 1)
+    for (const docSnap of querySnapshot.docs) {
+      await deleteDoc(doc(db, "saved_jobs", docSnap.id));
+    }
+
+    // Update local state
+    setSavedJobs((prev) => prev.filter((id) => id !== jobId));
+
+    toast.success("Job unsaved successfully!");
+  } catch (error) {
+    console.error("Error unsaving job:", error);
+    toast.error("Error unsaving job!");
+  }
+};
+
+
+
+
+
+
+
+
+
+
+
+
+
 
   const handleSaveJob = async (jobId) => {
     try {
@@ -994,234 +1048,264 @@ onClick={() => {
             )}
             
             {sortedJobs.length > 0 ? (
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {sortedJobs.map(job => {
                   const isEligible = checkEligibility(job);
                   const isSaved = savedJobs.includes(job.id);
                   const isApplied = appliedJobs.includes(job.id);
                   const timeRemaining = getTimeRemaining(job.deadline);
-                  
                   const completed = isJobCompleted(job);
+
+                  // compute posted days ago if created_at exists
+                  let postedAgo = '';
+                  try {
+                    const created = job.created_at && (job.created_at.toDate ? job.created_at.toDate() : new Date(job.created_at.seconds * 1000));
+                    if (created) {
+                      const diffMs = Date.now() - created.getTime();
+                      const days = Math.max(0, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
+                      postedAgo = days === 0 ? 'Today' : `${days} day${days !== 1 ? 's' : ''} ago`;
+                    }
+                  } catch (_) {}
+
+                  // compute comp chips
+                  const formatAmount = (val) => {
+                    const num = Number(val);
+                    if (!isFinite(num) || num <= 0) return null;
+                    try { return num.toLocaleString('en-IN'); } catch (_) { return String(num); }
+                  };
+                  const ctcUnit = (job.ctcUnit || 'Yearly').toLowerCase();
+                  const ctcUnitText = ctcUnit === 'yearly' ? 'year' : ctcUnit;
+                  const salaryUnit = (job.salaryUnit || 'Monthly').toLowerCase();
+                  const salaryUnitText = salaryUnit === 'monthly' ? 'month' : salaryUnit;
+                  const ctcRange = formatAmount(job.minCtc) || formatAmount(job.maxCtc)
+                    ? `${formatAmount(job.minCtc) || '—'} - ₹${formatAmount(job.maxCtc) || '—'}`
+                    : null;
+                  const ctcSingle = formatAmount(job.ctc);
+                  const ctcDisplay = ctcRange
+                    ? `₹${ctcRange}/${ctcUnitText}`
+                    : (ctcSingle ? `₹${ctcSingle}/${ctcUnitText}` : 'Not Disclosed');
+                  const stipendRange = formatAmount(job.minSalary) || formatAmount(job.maxSalary)
+                    ? `${formatAmount(job.minSalary) || '—'} - ₹${formatAmount(job.maxSalary) || '—'}`
+                    : null;
+                  const stipendSingle = formatAmount(job.salary);
+                  const stipendDisplay = stipendRange
+                    ? `₹${stipendRange}/${salaryUnitText}`
+                    : (stipendSingle ? `₹${stipendSingle}/${salaryUnitText}` : 'Not Disclosed');
+
+                  const isWithdrawn = isApplied && applicationStatuses[job.id] === 'withdrawn';
+
+
+
+
+
+
+
+return (
+  <div
+    key={job.id}
+    className={`relative bg-white rounded-xl border-4 border-gray-300 shadow-sm hover:shadow-lg hover:-translate-y-1 transform transition duration-200 cursor-pointer ${completed ? 'opacity-80' : ''} flex flex-col h-full`}
+    onClick={() => handleViewDetails(job.id)}
+  >
+    {/* Position */}
+    <h3 className="text-xl font-semibold text-gray-900 text-center mb-2 mt-2">
+      {job.position}
+    </h3>
+
+    {/* Divider */}
+    <hr className="border-t border-black" />
+
+    {/* Row directly below divider */}
+    <div className="flex items-start justify-between px-4 py-2">
+      {/* Company + posted time */}
+      <div className="flex flex-col gap-1">
+        <span className="text-lg font-bold text-gray-800">{job.company}</span>
+        {postedAgo && (
+          <span className="text-xs text-gray-500">{postedAgo}</span>
+        )}
+      </div>
+
+      {/* Right side: Save button + eligibility */}
+      <div className="flex flex-col items-end gap-1 text-xs">
+        {/* Save / Saved */}
+        {isSaved ? (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              handleUnsaveJob(job.id);
+            }}
+            className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 hover:bg-gray-200"
+            title="Unsave job"
+          >
+            Saved
+          </button>
+        ) : (
+          
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleSaveJob(job.id);
+                }}
+                className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 hover:bg-gray-200 flex items-center gap-1"
+                title="Save job"
+              >
+                Save
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="#FFD700" // Gold color
+                  className="w-4 h-4"
+                >
+                  <path d="M6.75 2.25A2.25 2.25 0 004.5 4.5v15.818a.75.75 0 001.185.62l6.315-4.418a.75.75 0 01.9 0l6.315 4.418a.75.75 0 001.185-.62V4.5a2.25 2.25 0 00-2.25-2.25h-11.4z" />
+                </svg>
+              </button>
+
+
+        )}
+
+        {/* Eligibility */}
+        <div
+          className={`px-2 py-0.5 rounded-full font-medium ${
+            isEligible
+              ? 'bg-green-100 text-green-800'
+              : 'bg-red-100 text-red-800'
+          }`}
+        >
+          {isEligible ? 'Eligible' : 'Not Eligible'}
+        </div>
+
+        {!isEligible && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              const issues = getEligibilityDetails(job);
+              issues.forEach((issue) => toast.error(issue));
+            }}
+            className="text-[11px] underline text-gray-500"
+          >
+            View Issues
+          </button>
+        )}
+      </div>
+    </div>
+
+    {/* Body */}
+    <div className="px-4 pb-4 flex-1">
+      {job.jobRoles && (
+        <div className="text-sl font-semibold text-gray-900 mb-3">
+          {job.jobRoles}
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-2 mb-3">
+        {(Array.isArray(job.jobTypes)
+          ? job.jobTypes
+          : typeof job.jobTypes === 'string'
+          ? [job.jobTypes]
+          : []
+        )
+          .slice(0, 1)
+          .map((t, idx) => (
+            <span
+              key={idx}
+              className="px-2 py-1 rounded bg-gray-300 text-gray-800 font-semibold text-xs"
+            >
+              {t}
+            </span>
+          ))}
+        {job.workMode && (
+          <span className="px-2 py-1 rounded bg-gray-300 text-gray-800 font-semibold text-xs">
+            {job.workMode}
+          </span>
+        )}
+        {job.location && (
+          <span className="px-2 py-1 rounded bg-gray-300 text-gray-800 font-semibold text-xs">
+            {job.location}
+          </span>
+        )}
+      </div>
+
+      <div className="flex flex-wrap gap-2 mb-3">
+        <span className="px-2 py-1 rounded-full bg-yellow-100 text-grey-800 text-xs">
+          CTC - {ctcDisplay}
+        </span>
+        <span className="px-2 py-1 rounded-full bg-yellow-100 text-grey-800 text-xs">
+          Stipend - {stipendDisplay}
+        </span>
+      </div>
+
+      <div className="flex flex-wrap gap-2 mb-2">
+        {((Array.isArray(job.jobTypes) &&
+          job.jobTypes.includes('Intern leads to FTE')) ||
+          (typeof job.jobTypes === 'string' &&
+            job.jobTypes.toLowerCase().includes('intern leads to fte'))) && (
+          <span className="px-2 py-1 rounded bg-blue-100 text-blue-800 text-xs">
+            Internship leads to FTE
+          </span>
+        )}
+        {job.ppoPportunity && (
+          <span className="px-2 py-1 rounded bg-blue-100 text-blue-800 text-xs">
+            PPO
+          </span>
+        )}
+        {job.bondRequired && (
+          <span className="px-2 py-1 rounded bg-[#fff7ed] text-grey-800 text-xs">
+            Bond
+          </span>
+        )}
+      </div>
+    </div>
+
+    {/* Footer pinned to bottom */}
+    <div
+      className={`border-t px-4 py-3 rounded-b-xl ${
+        isApplied
+          ? isWithdrawn
+            ? 'bg-red-100'
+            : 'bg-green-100'
+          : 'bg-gray-50'
+      }`}
+    >
+      {isApplied ? (
+        <div
+          className={`text-sl text-center font-bold ${
+            isWithdrawn ? 'text-red-700' : 'text-green-700'
+          }`}
+        >
+          {isWithdrawn ? 'Withdrawn' : 'Applied'}
+        </div>
+      ) : (
+        <>
+          <div className="flex items-center justify-between text-sm">
+            <div className="text-gray-500">Application Deadline</div>
+            {timeRemaining && timeRemaining !== 'Expired' && (
+              <div className="text-red-600 font-medium">
+                {timeRemaining} left
+              </div>
+            )}
+          </div>
+          <div className="mt-1 font-medium text-gray-900">
+            {job.deadline
+              ? new Date(job.deadline).toLocaleDateString()
+              : 'No deadline'}
+            {timeRemaining === 'Expired' && (
+              <span className="ml-2 text-sm text-red-600 font-medium">
+                Expired
+              </span>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  </div>
+);
+
+
+
+
+
+
+
                   
-                  return (
-                    <div 
-                      key={job.id} 
-                      className={`bg-white rounded-lg shadow-md overflow-hidden hover:shadow-lg transition-shadow duration-300 ${completed ? 'opacity-70' : ''} ${isApplied && applicationStatuses[job.id] === 'withdrawn' ? 'opacity-60' : ''}`}
-                    >
-                      {/* Completed Label */}
-                      {completed && (
-                        <div className="bg-gray-800 text-white text-center py-1 text-sm font-medium">
-                          Completed
-                        </div>
-                      )}
-
-                      {/* Withdrawn Overlay */}
-                      {isApplied && applicationStatuses[job.id] === 'withdrawn' && (
-                        <div className="absolute inset-0 bg-red-50 bg-opacity-90 flex items-center justify-center z-10">
-                          <div className="text-center">
-                            <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-2">
-                              <svg className="w-8 h-8 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
-                              </svg>
-                            </div>
-                            <p className="text-red-800 font-semibold text-lg">Application Withdrawn</p>
-                            <p className="text-red-600 text-sm">Cannot reapply</p>
-                          </div>
-                        </div>
-                      )}
-                      
-                      {/* Card Header */}
-                      <div className="p-4 border-b">
-                        <div className="flex justify-between items-start">
-                          <div>
-                            <div className="flex items-center gap-2 mb-1">
-                              <h3 className="text-xl font-semibold text-gray-800">{job.position}</h3>
-                              {/* Withdrawn Badge */}
-                              {isApplied && applicationStatuses[job.id] === 'withdrawn' && (
-                                <span className="px-2 py-1 bg-red-100 text-red-800 text-xs font-medium rounded-full">
-                                  Withdrawn
-                                </span>
-                              )}
-                            </div>
-                            <p className="text-gray-600">{job.company}</p>
-                          </div>
-                          <div className="flex flex-col items-end">
-                            <div className={`px-3 py-1 rounded-full text-sm font-medium ${isEligible ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
-                              {isEligible ? 'Eligible' : 'Not Eligible'}
-                            </div>
-                            {!isEligible && (
-                              <button 
-                                onClick={() => {
-                                  const issues = getEligibilityDetails(job);
-                                  issues.forEach(issue => toast.error(issue));
-                                }}
-                                className="mt-1 text-xs text-gray-500 underline"
-                                title="View eligibility issues"
-                              >
-                                View Issues
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                      
-                      {/* Card Body */}
-                      <div className="p-4 space-y-2">
-                        {/* Job Details */}
-                        <div className="grid grid-cols-2 gap-2">
-
-                                                    <div>
-                            <p className="text-sm text-gray-500">Job Role</p>
-                            <p className="font-medium">
-                              {job.jobRoles && typeof job.jobRoles === 'string' && job.jobRoles.trim() !== ''
-                                ? job.jobRoles
-                                : 'Not specified'}
-                            </p>
-                          </div>
-                         <div>
-                              <p className="text-sm text-gray-500">Job Type</p>
-                              <p className="font-medium">
-                                {job.jobTypes && typeof job.jobTypes === 'string' && job.jobTypes.trim() !== ''
-                                  ? job.jobTypes
-                                  : 'Not specified'}
-                              </p>
-                            </div>
-
-                          <div>
-                            <p className="text-sm text-gray-500">Location</p>
-                            <p className="font-medium">{job.location || 'Not specified'}</p>
-                          </div>
-                          <div>
-                            <p className="text-sm text-gray-500">Work Mode</p>
-                            <p className="font-medium">{job.workMode || 'Not specified'}</p>
-                          </div>
-                          <div>
-                            <p className="text-sm text-gray-500">Required CGPA</p>
-                            <p className="font-medium">{job.minCGPA || 'Not specified'}</p>
-                          </div>
-
-                          </div>
-                          <div>
-                            <h4 className="text-sm text-gray-800 mb-1">
-                              {job.jobTypes?.includes('Internship') ? 'Stipend' : 'CTC'}
-                            </h4>
-
-
-                                  <p className="text-sm font-semibold text-gray-900">
-                                    {typeof job.jobTypes === 'string' && job.jobTypes.toLowerCase().includes('intern')
-                                      ? (
-                                          job.minSalary || job.maxSalary
-                                            ? `₹${job.minSalary || '—'} - ₹${job.maxSalary || '—'}/${job.salaryUnit?.toLowerCase() === 'monthly' ? 'month' : job.salaryUnit}`
-                                            : (job.salary
-                                                ? `₹${job.salary}/${job.salaryUnit?.toLowerCase() === 'monthly' ? 'month' : job.salaryUnit}`
-                                                : 'Not specified')
-                                        )
-                                      : (
-                                          job.minCtc || job.maxCtc
-                                            ? `₹${job.minCtc || '—'} - ₹${job.maxCtc || '—'}/${job.ctcUnit?.toLowerCase() === 'yearly' ? 'year' : job.ctcUnit}`
-                                            : (job.ctc
-                                                ? `₹${job.ctc}/${job.ctcUnit?.toLowerCase() === 'yearly' ? 'year' : job.ctcUnit}`
-                                                : 'Not specified')
-                                        )}
-                                  </p>
-
-
-
-
-                            {job.jobTypes?.includes('Internship') && job.ppoPportunity && (
-                              <p className="text-sm text-gray-700 mt-1">PPO Opportunity Available</p>
-                            )}
-                          </div>
-                        {/* </div> */}
-                        
-                        {/* Deadline */}
-                        <div>
-                          <div className="flex justify-between items-center">
-                            <p className="text-sm text-gray-500">Application Deadline</p>
-                            {timeRemaining && timeRemaining !== 'Expired' && (
-                              <p className="text-sm font-medium text-red-600">{timeRemaining} left</p>
-                            )}
-                          </div>
-                          <p className="font-medium">
-                            {job.deadline ? new Date(job.deadline).toLocaleDateString() : 'No deadline'}
-                            {timeRemaining === 'Expired' && (
-                              <span className="ml-2 text-sm text-red-600 font-medium">Expired</span>
-                            )}
-                          </p>
-                        </div>
-                        
-                        {/* Skills */}
-                        {job.skills && job.skills.length > 0 && (
-                          <div>
-                            <p className="text-sm text-gray-500 mb-2">Required Skills</p>
-                            <div className="flex flex-wrap gap-2">
-                              {job.skills.map((skill, index) => (
-                                <span key={index} className="px-2 py-1 bg-gray-100 text-gray-800 text-sm rounded-full">
-                                  {skill}
-                                </span>
-                              ))}
-                            </div>
-                            <div className="mt-2">
-                              <div className="text-sm font-medium">Skill Match</div>
-                              <div className="w-full bg-gray-200 rounded-full h-2.5">
-                                <div 
-                                  className="bg-blue-600 h-2.5 rounded-full"
-                                  style={{ width: `${calculateSkillMatch(job)}%` }}
-                                ></div>
-                              </div>
-                              <div className="text-sm text-gray-600 mt-1">{calculateSkillMatch(job)}% match</div>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                      
-                      {/* Card Footer */}
-                      <div className="p-6 border-t bg-gray-50">
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => handleViewDetails(job.id)}
-                            className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
-                          >
-                            View Details
-                          </button>
-                          
-                          {completed ? (
-                            <button
-                              onClick={() => handleViewSelected(job.id)}
-                              className="flex-1 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition"
-                            >
-                              View Selected
-                            </button>
-                          ) : isApplied ? (
-                            applicationStatuses[job.id] === 'withdrawn' ? (
-                              <button
-                                disabled
-                                className="flex-1 px-4 py-2 bg-red-100 text-red-800 rounded-lg cursor-not-allowed"
-                              >
-                                Withdrawn
-                              </button>
-                            ) : (
-                              <button
-                                disabled
-                                className="flex-1 px-4 py-2 bg-green-100 text-green-800 rounded-lg cursor-not-allowed"
-                              >
-                                Applied
-                              </button>
-                            )
-                          ) : (
-                            !isSaved && (
-                              <button
-                                onClick={() => handleSaveJob(job.id)}
-                                className="flex-1 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition"
-                              >
-                                Save
-                              </button>
-                            )
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  );
                 })}
               </div>
             ) : (

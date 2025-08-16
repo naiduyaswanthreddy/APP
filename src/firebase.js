@@ -38,6 +38,7 @@ export const cleanupFCMToken = httpsCallable(functions, 'cleanupFCMToken');
 export const sendJobNotificationToEligibleStudents = httpsCallable(functions, 'sendJobNotificationToEligibleStudents');
 export const sendNotificationToAdmins = httpsCallable(functions, 'sendNotificationToAdmins');
 export const sendNotificationToSpecificUsers = httpsCallable(functions, 'sendNotificationToSpecificUsers');
+export const retryFailedEmails = httpsCallable(functions, 'retryFailedEmails');
 
 export async function enablePushNotifications() {
   try {

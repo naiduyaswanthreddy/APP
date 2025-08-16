@@ -10,7 +10,7 @@ import JobDetailsEdit from './JobDetailsEdit';
 import StudentDetailsModal from './StudentDetailsModal';
 import JobLogs from './JobLogs';
 import PageLoader from '../../ui/PageLoader';
-import { createStatusUpdateNotification, createInterviewNotification, createSystemAlertNotification } from '../../../utils/notificationHelpers';
+import { createStatusUpdateNotification, createInterviewNotification, createSystemAlertNotification, sendSelectionNotification } from '../../../utils/notificationHelpers';
 
 const JobApplications = () => {
   const { jobId } = useParams();
@@ -63,7 +63,8 @@ const JobApplications = () => {
   const [roundLoading, setRoundLoading] = useState(false);
   // Column management
   const [visibleColumns, setVisibleColumns] = useState([
-    'name', 'rollNumber', 'department', 'cgpa', 'match', 'roundStatus', 'resume', 'predict',
+    'name', 'rollNumber', 'department', 'cgpa', 'email', 'phone', 'currentArrears', 'historyArrears',
+    'skills', 'tenthPercentage', 'twelfthPercentage', 'diplomaPercentage', 'gender', 'roundStatus', 'resume', 'predict',
     'question1', 'question2', 'feedback', 'rounds'
   ]);
   const allPossibleColumns = [
@@ -78,14 +79,22 @@ const JobApplications = () => {
   // Define fetchJobAndApplications before using it in useEffect
   const fetchJobAndApplications = useCallback(async () => {
     setLoading(true);
+    console.log('Fetching job and applications for jobId:', jobId);
     try {
       const jobRef = doc(db, "jobs", jobId);
       const jobSnap = await getDoc(jobRef);
-   
+      
+      console.log('Job snapshot exists:', jobSnap.exists());
       if (jobSnap.exists()) {
+        console.log('Job data:', jobSnap.data());
         // Add date validation helper function
         const validateDate = (dateValue) => {
           if (!dateValue) return null;
+          // Handle Firestore Timestamp objects
+          if (dateValue && typeof dateValue.toDate === 'function') {
+            return dateValue.toDate();
+          }
+          // Handle regular date strings/objects
           const date = new Date(dateValue);
           return isNaN(date.getTime()) ? null : date;
         };
@@ -121,7 +130,8 @@ const JobApplications = () => {
           screeningQuestions: Array.isArray(jobSnap.data().screeningQuestions) ? jobSnap.data().screeningQuestions : [],
           attachments: Array.isArray(jobSnap.data().attachments) ? jobSnap.data().attachments :
                       (Array.isArray(jobSnap.data().fileAttachments) ? jobSnap.data().fileAttachments : []),
-          currentRoundIndex: jobSnap.data().currentRoundIndex || 0 // Add current round index
+          currentRoundIndex: jobSnap.data().currentRoundIndex || 0, // Add current round index
+          currentRound: jobSnap.data().currentRound || ''
         };
         setJob(jobData);
         setEditedJob(jobData); // This will ensure all fields are available in the edit modal
@@ -134,6 +144,9 @@ const JobApplications = () => {
      
         const querySnapshot1 = await getDocs(q1);
         const querySnapshot2 = await getDocs(q2);
+        
+        console.log('Query 1 results (jobId):', querySnapshot1.size, querySnapshot1.docs.map(doc => ({ id: doc.id, data: doc.data() })));
+        console.log('Query 2 results (job_id):', querySnapshot2.size, querySnapshot2.docs.map(doc => ({ id: doc.id, data: doc.data() })));
      
         // Combine results from both queries
         const combinedDocs = [...querySnapshot1.docs, ...querySnapshot2.docs];
@@ -141,71 +154,158 @@ const JobApplications = () => {
         const uniqueDocs = combinedDocs.filter((doc, index, self) =>
           index === self.findIndex((d) => d.id === doc.id)
         );
+        
+        console.log('Combined unique docs:', uniqueDocs.length);
      
-        // Fetch all applications and their corresponding student data
-        const applicationsData = await Promise.all(
-          uniqueDocs.map(async (appDoc) => {
-            const appData = { id: appDoc.id, ...appDoc.data() };
-            // Fetch student data from students collection
-            const studentRef = doc(db, "students", appData.student_id);
-            const studentSnap = await getDoc(studentRef);
-         
-            // In the fetchJobAndApplications function, update the student data handling
-            // Around line 57-80
-            if (studentSnap.exists()) {
+        // Fetch all applications for this job and their student data
+        const applicationsData = await Promise.all(uniqueDocs.map(async (appDoc) => {
+          const appData = { id: appDoc.id, ...appDoc.data() };
+          
+          console.log('Raw application data:', appData);
+          console.log('Available fields in appData:', Object.keys(appData));
+          console.log('Student object in appData:', appData.student);
+          console.log('StudentData object in appData:', appData.studentData);
+          console.log('Screening answers in appData:', appData.screening_answers);
+          console.log('All fields containing "screening" or "answer":', Object.keys(appData).filter(key => key.toLowerCase().includes('screening') || key.toLowerCase().includes('answer')));
+          
+          // Create a basic student object from application data or use defaults
+          // First, check if there's already a student object in the application data
+          const existingStudent = appData.student || appData.studentData || {};
+          
+          // Try to find student data in various possible locations
+          const findStudentField = (fieldName, alternatives = []) => {
+            // Check in existing student object first
+            if (existingStudent[fieldName]) return existingStudent[fieldName];
+            
+            // Check in appData with various naming patterns
+            for (const alt of alternatives) {
+              if (appData[alt]) return appData[alt];
+            }
+            
+            // Check for common variations
+            const variations = [
+              fieldName,
+              `student_${fieldName}`,
+              `student${fieldName.charAt(0).toUpperCase() + fieldName.slice(1)}`,
+              fieldName.toLowerCase(),
+              fieldName.toUpperCase()
+            ];
+            
+            for (const variation of variations) {
+              if (appData[variation]) return appData[variation];
+            }
+            
+            return null;
+          };
+          
+          appData.student = {
+            id: appData.student_id || appData.studentId || existingStudent.id || 'unknown',
+            name: findStudentField('name', ['studentName', 'fullName', 'student_name']) || 'N/A',
+            rollNumber: findStudentField('rollNumber', ['roll', 'studentRollNumber', 'student_rollNumber']) || 'N/A',
+            department: findStudentField('department', ['dept', 'studentDepartment', 'student_department']) || 'N/A',
+            cgpa: findStudentField('cgpa', ['gpa', 'studentCgpa', 'student_cgpa']) || '0',
+            email: findStudentField('email', ['studentEmail', 'student_email']) || 'N/A',
+            phone: findStudentField('phone', ['mobile', 'contact', 'studentPhone', 'student_phone']) || 'N/A',
+            currentArrears: findStudentField('currentArrears', ['arrears', 'current_arrears', 'studentCurrentArrears']) || '0',
+            historyArrears: findStudentField('historyArrears', ['history_arrears', 'studentHistoryArrears']) || '0',
+            skills: (() => {
+              const skillsData = findStudentField('skills', ['studentSkills', 'student_skills']);
+              return Array.isArray(skillsData) ? skillsData : [];
+            })(),
+            tenthPercentage: findStudentField('tenthPercentage', ['tenth', '10th', 'studentTenthPercentage']) || 'N/A',
+            twelfthPercentage: findStudentField('twelfthPercentage', ['twelfth', '12th', 'studentTwelfthPercentage']) || 'N/A',
+            diplomaPercentage: findStudentField('diplomaPercentage', ['diploma', 'studentDiplomaPercentage']) || 'N/A',
+            gender: findStudentField('gender', ['sex', 'studentGender']) || 'N/A',
+            rounds: existingStudent.rounds || appData.student_rounds || appData.rounds || {}
+          };
+          
+          console.log('Processed student data:', appData.student);
+          console.log('Field mapping results:');
+          console.log('- name found:', findStudentField('name', ['studentName', 'fullName', 'student_name']));
+          console.log('- rollNumber found:', findStudentField('rollNumber', ['roll', 'studentRollNumber', 'student_rollNumber']));
+          console.log('- department found:', findStudentField('department', ['dept', 'studentDepartment', 'student_department']));
+          console.log('- cgpa found:', findStudentField('cgpa', ['gpa', 'studentCgpa', 'student_cgpa']));
+          console.log('- email found:', findStudentField('email', ['studentEmail', 'student_email']));
+          
+          // Fetch student data from students collection
+          // Prefer student_id field, fallback to studentId or existing student.id, else lookup by rollNumber
+          try {
+            const fallbackRoll = appData.student?.rollNumber && appData.student.rollNumber !== 'N/A' ? appData.student.rollNumber : null;
+            const candidateId = (appData.student_id || appData.studentId || existingStudent.id);
+            const normalizedCandidateId = (candidateId && candidateId !== 'unknown') ? candidateId : null;
+
+            let studentSnap = null;
+            let resolvedStudentId = null;
+
+            if (normalizedCandidateId) {
+              const studentRef = doc(db, 'students', normalizedCandidateId);
+              studentSnap = await getDoc(studentRef);
+              resolvedStudentId = normalizedCandidateId;
+            }
+
+            // If not found by ID, try lookup by rollNumber
+            if (!studentSnap || !studentSnap.exists()) {
+              if (fallbackRoll) {
+                const studentsRef = collection(db, 'students');
+                const q = query(studentsRef, where('rollNumber', '==', fallbackRoll));
+                const snap = await getDocs(q);
+                if (!snap.empty) {
+                  studentSnap = snap.docs[0];
+                  resolvedStudentId = studentSnap.id;
+                }
+              }
+            }
+
+            if (studentSnap && studentSnap.exists()) {
               const studentData = studentSnap.data();
+              console.log('Fetched student data for', resolvedStudentId, ':', studentData);
+
+              // Merge student data with existing student object
               appData.student = {
-                id: studentSnap.id,
-                ...studentData,
-                // Ensure all required fields have default values
-                name: studentData.name || 'N/A',
-                rollNumber: studentData.rollNumber || 'N/A',
-                department: studentData.department || 'N/A',
-                cgpa: studentData.cgpa || '0',
-                email: studentData.email || 'N/A',
-                phone: studentData.phone || 'N/A',
-                currentArrears: studentData.currentArrears || '0',
-                historyArrears: studentData.historyArrears || '0',
-                skills: Array.isArray(studentData.skills) ? studentData.skills : [], // Ensure skills is always an array
-                tenthPercentage: studentData.tenthPercentage || 'N/A',
-                twelfthPercentage: studentData.twelfthPercentage || 'N/A',
-                diplomaPercentage: studentData.diplomaPercentage || 'N/A',
-                gender: studentData.gender || 'N/A'
+                ...appData.student,
+                id: resolvedStudentId || appData.student.id,
+                name: studentData.name || appData.student.name || 'N/A',
+                rollNumber: studentData.rollNumber || appData.student.rollNumber || 'N/A',
+                department: studentData.department || appData.student.department || 'N/A',
+                cgpa: studentData.cgpa || appData.student.cgpa || '0',
+                email: studentData.email || appData.student.email || 'N/A',
+                phone: studentData.phone || appData.student.phone || 'N/A',
+                currentArrears: studentData.currentArrears || appData.student.currentArrears || '0',
+                historyArrears: studentData.historyArrears || appData.student.historyArrears || '0',
+                skills: Array.isArray(studentData.skills) ? studentData.skills : appData.student.skills,
+                tenthPercentage: studentData.tenthPercentage || appData.student.tenthPercentage || 'N/A',
+                twelfthPercentage: studentData.twelfthPercentage || appData.student.twelfthPercentage || 'N/A',
+                diplomaPercentage: studentData.diplomaPercentage || appData.student.diplomaPercentage || 'N/A',
+                gender: studentData.gender || appData.student.gender || 'N/A',
+                rounds: studentData.rounds || appData.student.rounds || {}
               };
             } else {
-              console.warn(`Student data not found for ID: ${appData.student_id}`);
-              appData.student = {
-                id: appData.student_id,
-                name: 'N/A',
-                rollNumber: 'N/A',
-                department: 'N/A',
-                cgpa: '0',
-                email: 'N/A',
-                phone: 'N/A',
-                currentArrears: '0',
-                historyArrears: '0',
-                skills: [], // Ensure skills is always an array
-                tenthPercentage: 'N/A',
-                twelfthPercentage: 'N/A',
-                diplomaPercentage: 'N/A',
-                gender: 'N/A'
-              };
+              if (normalizedCandidateId || fallbackRoll) {
+                console.warn('Student not found for identifier:', normalizedCandidateId || fallbackRoll);
+              }
             }
-            // Add round data to application (assuming stored in appData.reachedRound or default 0)
-            appData.reachedRound = appData.reachedRound || 0;
-            return appData;
-          })
-        );
+          } catch (error) {
+            console.error('Error fetching student data (by id or rollNumber):', error);
+          }
+          
+          // Add round data to application
+          appData.reachedRound = appData.reachedRound || 0;
+          
+          return appData;
+        }));
      
+        console.log('Fetched applications:', applicationsData.length, applicationsData);
         setApplications(applicationsData);
         setFilteredApplications(applicationsData);
         // Initialize round shortlists
         const shortlists = {};
-        jobData.rounds.forEach((_, index) => {
-          shortlists[index] = applicationsData
-            .filter(app => app.reachedRound >= index)
-            .map(app => app.id);
-        });
+        if (Array.isArray(jobData.rounds)) {
+          jobData.rounds.forEach((_, index) => {
+            shortlists[index] = applicationsData
+              .filter(app => app.reachedRound >= index)
+              .map(app => app.id);
+          });
+        }
         setRoundShortlists(shortlists);
       } else {
         toast.error("Job not found!");
@@ -238,27 +338,27 @@ const JobApplications = () => {
     if (filters.eligibility !== 'all') {
       const isEligible = filters.eligibility === 'eligible';
       filtered = filtered.filter(app => {
-        const student = app.student;
-        const meetsGPA = !job.minCGPA || parseFloat(student.cgpa) >= parseFloat(job.minCGPA);
-        const meetsCurrentArrears = !job.maxCurrentArrears || parseInt(student.currentArrears) <= parseInt(job.maxCurrentArrears);
-        const meetsHistoryArrears = !job.maxHistoryArrears || parseInt(student.historyArrears) <= parseInt(job.maxHistoryArrears);
+        const student = app.student || {};
+        const meetsGPA = !job.minCGPA || parseFloat(student.cgpa || '0') >= parseFloat(job.minCGPA);
+        const meetsCurrentArrears = !job.maxCurrentArrears || parseInt(student.currentArrears || '0') <= parseInt(job.maxCurrentArrears);
+        const meetsHistoryArrears = !job.maxHistoryArrears || parseInt(student.historyArrears || '0') <= parseInt(job.maxHistoryArrears);
         return isEligible ? (meetsGPA && meetsCurrentArrears && meetsHistoryArrears) : !(meetsGPA && meetsCurrentArrears && meetsHistoryArrears);
       });
     }
     // Department filter
     if (filters.department !== 'all') {
-      filtered = filtered.filter(app => app.student.department === filters.department);
+      filtered = filtered.filter(app => app.student?.department === filters.department);
     }
     // CGPA filter
     if (filters.cgpa) {
-      filtered = filtered.filter(app => parseFloat(app.student.cgpa) >= parseFloat(filters.cgpa));
+      filtered = filtered.filter(app => parseFloat(app.student?.cgpa || '0') >= parseFloat(filters.cgpa));
     }
     // Search filter (space-separated multi-term)
     if (filters.searchTerm) {
       const terms = filters.searchTerm.trim().split(/\s+/);
       filtered = filtered.filter(app => {
-        const name = app.student.name.toLowerCase();
-        const roll = app.student.rollNumber.toLowerCase();
+        const name = (app.student?.name || '').toLowerCase();
+        const roll = (app.student?.rollNumber || '').toLowerCase();
         return terms.some(term =>
           name.includes(term.toLowerCase()) ||
           roll.includes(term.toLowerCase())
@@ -292,6 +392,11 @@ const JobApplications = () => {
         }
       });
     }
+    console.log('Filtering debug:', {
+      originalApplicationsLength: applications.length,
+      filteredApplicationsLength: filtered.length,
+      filters
+    });
     setFilteredApplications(filtered);
   }, [applications, filters, job, selectedRoundTransition, currentRound, visibleColumns, questionFilters]);
   // Pagination logic
@@ -299,6 +404,16 @@ const JobApplications = () => {
   const indexOfFirstApp = indexOfLastApp - applicationsPerPage;
   const currentApplications = filteredApplications.slice(indexOfFirstApp, indexOfLastApp);
   const totalPages = Math.ceil(filteredApplications.length / applicationsPerPage);
+  
+  console.log('Pagination debug:', {
+    filteredApplicationsLength: filteredApplications.length,
+    currentPage,
+    applicationsPerPage,
+    indexOfFirstApp,
+    indexOfLastApp,
+    currentApplicationsLength: currentApplications.length,
+    totalPages
+  });
   // Update the handleStudentClick function to ensure skills is always an array
   // Update the handleStudentClick function to fetch student's applications
   const handleStudentClick = async (student) => {
@@ -346,7 +461,7 @@ const JobApplications = () => {
    
       // Calculate analytics
       const statusCounts = studentApplications.reduce((acc, app) => {
-        const status = app.student.rounds?.[currentRound] || 'pending';
+        const status = app.student?.rounds?.[currentRound] || 'pending';
         acc[status] = (acc[status] || 0) + 1;
         return acc;
       }, {});
@@ -438,9 +553,9 @@ const JobApplications = () => {
         app.id === applicationId ? {
           ...app,
           student: {
-            ...app.student,
+            ...app.student || {},
             rounds: {
-              ...app.student.rounds,
+              ...app.student?.rounds || {},
               [currentRound]: newStatus
             }
           },
@@ -504,9 +619,9 @@ const JobApplications = () => {
         selectedApplications.includes(app.id) ? {
           ...app,
           student: {
-            ...app.student,
+            ...app.student || {},
             rounds: {
-              ...app.student.rounds,
+              ...app.student?.rounds || {},
               [currentRound]: newStatus
             }
           },
@@ -518,7 +633,7 @@ const JobApplications = () => {
       );
       setApplications(updatedApplications);
       setFilteredApplications(updatedApplications);
-      const statusChanges = selectedApps.map(app => `${app.student.name} → ${newStatus}`).join('\n');
+      const statusChanges = selectedApps.map(app => `${app.student?.name || 'Unknown Student'} → ${newStatus}`).join('\n');
       toast.success(
         `Successfully updated ${selectedApplications.length} applications\n${statusChanges}`,
         { autoClose: 5000 } // Give users more time to read the detailed message
@@ -622,20 +737,20 @@ const JobApplications = () => {
  
     // Format data for Excel with all possible fields
     const excelData = selectedData.map(app => ({
-      'Name': app.student.name,
-      'Roll Number': app.student.rollNumber,
-      'Department': app.student.department,
-      'CGPA': app.student.cgpa,
-      'Email': app.student.email,
-      'Phone': app.student.phone,
-      'Current Arrears': app.student.currentArrears,
-      'History Arrears': app.student.historyArrears,
-      'Skills': app.student.skills.join(', '),
-      '10th Percentage': app.student.tenthPercentage,
-      '12th Percentage': app.student.twelfthPercentage,
-      'Diploma Percentage': app.student.diplomaPercentage,
-      'Gender': app.student.gender,
-      'Round Status': roundStatusConfig[app.student.rounds?.[currentRound]]?.label || 'Pending',
+      'Name': app.student?.name || 'N/A',
+      'Roll Number': app.student?.rollNumber || 'N/A',
+      'Department': app.student?.department || 'N/A',
+      'CGPA': app.student?.cgpa || 'N/A',
+      'Email': app.student?.email || 'N/A',
+      'Phone': app.student?.phone || 'N/A',
+      'Current Arrears': app.student?.currentArrears || 'N/A',
+      'History Arrears': app.student?.historyArrears || 'N/A',
+      'Skills': Array.isArray(app.student?.skills) ? app.student.skills.join(', ') : 'N/A',
+      '10th Percentage': app.student?.tenthPercentage || 'N/A',
+      '12th Percentage': app.student?.twelfthPercentage || 'N/A',
+      'Diploma Percentage': app.student?.diplomaPercentage || 'N/A',
+      'Gender': app.student?.gender || 'N/A',
+      'Round Status': roundStatusConfig[app.student?.rounds?.[currentRound]]?.label || 'Pending',
       // Add more fields like questions, feedback, resume link, etc.
       'Question 1': app.answers?.[0] || '', // Assuming answers array
       'Question 2': app.answers?.[1] || '',
@@ -659,8 +774,8 @@ const JobApplications = () => {
     // using a library like jsPDF or react-pdf
     toast.info("PDF export functionality will be implemented soon");
   };
-  const legacyCurrentRound = job?.rounds[currentRoundIndex]?.name || 'N/A';
-  const legacyNextRound = job?.rounds[currentRoundIndex + 1]?.name || 'N/A';
+  const legacyCurrentRound = job?.rounds?.[currentRoundIndex]?.name || job?.rounds?.[currentRoundIndex]?.roundName || job?.currentRound || 'N/A';
+  const legacyNextRound = job?.rounds?.[currentRoundIndex + 1]?.name || job?.rounds?.[currentRoundIndex + 1]?.roundName || 'N/A';
   // Round Information Module functions
   const generateRoundTransitions = (rounds) => {
     if (!Array.isArray(rounds) || rounds.length < 1) {
@@ -724,12 +839,13 @@ const JobApplications = () => {
           const studentData = application.student || {};
           const currentRounds = studentData.rounds || {};
        
-          const updatedRounds = {
-            ...currentRounds,
-            [currentRound]: 'shortlisted',
-          };
+          const updatedRounds = { ...currentRounds };
           if (nextRound) {
+            updatedRounds[currentRound] = 'shortlisted';
             updatedRounds[nextRound] = 'pending';
+          } else {
+            // Finalize at last round → mark as selected in rounds
+            updatedRounds[currentRound] = 'selected';
           }
        
           const studentRef = doc(db, "students", application.student.id);
@@ -739,15 +855,32 @@ const JobApplications = () => {
        
           const applicationRef = doc(db, "applications", applicationId);
           batch.update(applicationRef, {
-            [`student.rounds`]: updatedRounds
+            [`student.rounds`]: updatedRounds,
+            // If this is the final round and we are finalizing (no nextRound), mark as selected
+            ...(nextRound ? {} : { status: 'selected' })
           });
 
           // Send notification to student
           try {
-            await createStatusUpdateNotification(application.student.id, {
-              job: { position: application.job?.position || 'Unknown Position' },
-              status: 'shortlisted'
-            });
+            if (nextRound) {
+              await createStatusUpdateNotification(application.student.id, {
+                job: { position: application.job?.position || 'Unknown Position', company: application.job?.company || job?.company },
+                status: 'shortlisted'
+              });
+            } else {
+              // Finalize shortlist at final round → Selected and notify to accept/reject
+              await createStatusUpdateNotification(application.student.id, {
+                job: { position: application.job?.position || 'Unknown Position', company: application.job?.company || job?.company },
+                status: 'selected'
+              });
+              await sendSelectionNotification(
+                application.student.id,
+                application.jobId || application.job_id || jobId,
+                application.job?.position || job?.position || 'Unknown Position',
+                application.job?.company || job?.company || 'Company',
+                true
+              );
+            }
           } catch (error) {
             console.error('Error sending shortlist notification:', error);
           }
@@ -780,7 +913,7 @@ const JobApplications = () => {
           // Send notification to student
           try {
             await createStatusUpdateNotification(application.student.id, {
-              job: { position: application.job?.position || 'Unknown Position' },
+              job: { position: application.job?.position || 'Unknown Position', company: application.job?.company || job?.company },
               status: 'rejected'
             });
           } catch (error) {
@@ -791,11 +924,23 @@ const JobApplications = () => {
    
       await batch.commit();
    
-      // Update current round to next round if exists
+      // Update current round to next round if exists (keep index and name in sync)
       if (nextRound) {
+        const nextIndex = Array.isArray(job?.rounds)
+          ? job.rounds.findIndex(r => (r.name || r.roundName) === nextRound)
+          : -1;
         await updateDoc(doc(db, "jobs", jobId), {
-          currentRound: nextRound
+          currentRound: nextRound,
+          ...(nextIndex >= 0 ? { currentRoundIndex: nextIndex } : {})
         });
+        if (nextIndex >= 0) {
+          setCurrentRoundIndex(nextIndex);
+          setJob(prev => prev ? { ...prev, currentRoundIndex: nextIndex, currentRound: nextRound } : prev);
+        } else {
+          setJob(prev => prev ? { ...prev, currentRound: nextRound } : prev);
+        }
+      } else {
+        // No next round: finalized. Leave job current round as is
       }
 
       // Send admin notification about the action
@@ -811,7 +956,7 @@ const JobApplications = () => {
    
       toast.success(`${selectedApplications.length} students shortlisted successfully!`);
       setSelectedApplications([]);
-      fetchApplications();
+      fetchJobAndApplications();
     } catch (error) {
       console.error('Error shortlisting students:', error);
       toast.error('Failed to shortlist students');
@@ -910,7 +1055,7 @@ const JobApplications = () => {
    
       toast.success(`${selectedApplications.length} students rejected successfully!`);
       setSelectedApplications([]);
-      fetchApplications();
+      fetchJobAndApplications();
     } catch (error) {
       console.error('Error rejecting students:', error);
       toast.error('Failed to reject students');
@@ -945,7 +1090,7 @@ const JobApplications = () => {
       try {
         await createSystemAlertNotification(
           'Interview Scheduled',
-          `Interview scheduled for ${application.student?.name || 'Student'} on ${new Date(interviewDateTime).toLocaleString()}`,
+          `Interview scheduled for ${application.student?.name || 'Student'} on ${interviewDateTime.toDate ? interviewDateTime.toDate().toLocaleString() : new Date(interviewDateTime).toLocaleString()}`,
           `/admin/job-applications/${jobId}`
         );
       } catch (error) {
@@ -962,15 +1107,24 @@ const JobApplications = () => {
   // Initialize round transitions when job data is loaded
   useEffect(() => {
     if (job) {
-      const transitions = generateRoundTransitions(job.rounds || job.hiringWorkflow);
+      const roundsArray = job.rounds || job.hiringWorkflow || [];
+      const transitions = generateRoundTransitions(roundsArray);
       setAvailableRounds(transitions);
-      if (transitions.length > 0 && !selectedRoundTransition) {
+      // Prefer the job's current round if available
+      const preferredRoundName = job.currentRound || roundsArray?.[currentRoundIndex]?.name || roundsArray?.[currentRoundIndex]?.roundName || '';
+      if (preferredRoundName) {
+        const match = transitions.find(t => getCurrentRoundFromTransition(t) === preferredRoundName) || transitions[0];
+        if (match) {
+          setSelectedRoundTransition(match);
+          setCurrentRound(getCurrentRoundFromTransition(match));
+        }
+      } else if (transitions.length > 0 && !selectedRoundTransition) {
         setSelectedRoundTransition(transitions[0]);
         const currentRoundName = getCurrentRoundFromTransition(transitions[0]);
         setCurrentRound(currentRoundName);
       }
     }
-  }, [job]);
+  }, [job, currentRoundIndex]);
   // When job is loaded, update columns and filters for dynamic questions
   useEffect(() => {
     if (job && Array.isArray(job.screeningQuestions)) {
@@ -1042,7 +1196,7 @@ const JobApplications = () => {
                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clipRule="evenodd" />
                      </svg>
-                     <span>Deadline: {job?.deadline && new Date(job.deadline).toLocaleDateString()}</span>
+                     <span>Deadline: {job?.deadline && (job.deadline.toDate ? job.deadline.toDate().toLocaleDateString() : new Date(job.deadline).toLocaleDateString())}</span>
                    </div>
                  </div>
                </div>
@@ -1154,21 +1308,65 @@ const JobApplications = () => {
                  <p className="text-sm text-gray-900 font-semibold">{job?.workMode || 'N/A'}</p>
                </div>
             
-               {/* Salary Range */}
-               <div className="bg-white rounded-lg p-3 border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
-                 <div className="flex items-center gap-2 mb-1">
-                   <div className="w-6 h-6 bg-green-100 rounded-lg flex items-center justify-center">
-                     <svg className="w-3 h-3 text-green-600" fill="currentColor" viewBox="0 0 20 20">
-                       <path d="M8.433 7.418c.155-.103.346-.196.567-.267v1.698a2.305 2.305 0 01-.567-.267C8.07 8.34 8 8.114 8 8c0-.114.07-.34.433-.582zM11 12.849v-1.698c.22.071.412.164.567.267.364.243.433.468.433.582 0 .114-.07.34-.433.582a2.305 2.305 0 01-.567.267z" />
-                       <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-13a1 1 0 10-2 0v.092a4.535 4.535 0 00-1.676.662C6.602 6.234 6 7.009 6 8c0 .99.602 1.765 1.324 2.246.48.32 1.054.545 1.676.662v1.941c-.391-.127-.68-.317-.843-.504a1 1 0 10-1.51 1.31c.562.649 1.413 1.076 2.353 1.253V15a1 1 0 102 0v-.092a4.535 4.535 0 001.676-.662C13.398 13.766 14 12.991 14 12c0-.99-.602-1.765-1.324-2.246A4.535 4.535 0 0011 9.092V7.151c.391.127.68.317.843.504a1 1 0 101.511-1.31c-.563-.649-1.413-1.076-2.354-1.253V5z" clipRule="evenodd" />
-                     </svg>
-                   </div>
-                   <span className="text-xs font-medium text-gray-500">Salary Range</span>
-                 </div>
-                 <p className="text-sm text-gray-900 font-semibold">
-                   {job?.minSalary && job?.maxSalary ? `${job.minSalary} - ${job.maxSalary} ${job.salaryUnit || ''}` : job?.salary || 'N/A'}
-                 </p>
-               </div>
+
+
+
+
+                {/* Stipend Card */}
+                <div className="bg-white rounded-lg p-3 border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
+                  <div className="flex items-center gap-2 mb-1">
+                    <div className="w-6 h-6 bg-green-100 rounded-lg flex items-center justify-center">
+                      <svg className="w-3 h-3 text-green-600" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M8.433 7.418c.155-.103.346-.196.567-.267v1.698a2.305 2.305 0 01-.567-.267C8.07 8.34 8 8.114 8 8c0-.114.07-.34.433-.582zM11 12.849v-1.698c.22.071.412.164.567.267.364.243.433.468.433.582 0 .114-.07.34-.433.582a2.305 2.305 0 01-.567.267z" />
+                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-13a1 1 0 10-2 0v.092a4.535 4.535 0 00-1.676.662C6.602 6.234 6 7.009 6 8c0 .99.602 1.765 1.324 2.246.48.32 1.054.545 1.676.662v1.941c-.391-.127-.68-.317-.843-.504a1 1 0 10-1.51 1.31c.562.649 1.413 1.076 2.353 1.253V15a1 1 0 102 0v-.092a4.535 4.535 0 001.676-.662C13.398 13.766 14 12.991 14 12c0-.99-.602-1.765-1.324-2.246A4.535 4.535 0 0011 9.092V7.151c.391.127.68.317.843.504a1 1 0 101.511-1.31c-.563-.649-1.413-1.076-2.354-1.253V5z" clipRule="evenodd" />
+                      </svg>
+                    </div>
+                    <span className="text-xs font-medium text-gray-500">Stipend</span>
+                  </div>
+                  <div className="text-sm text-gray-900 font-semibold space-y-1">
+                    <div>
+                      <span className="text-gray-500 mr-2">Stipend:</span>
+                      {(() => {
+                        const hasRange = job?.minSalary && job?.maxSalary;
+                        const unit = job?.salaryUnit || '';
+                        if (hasRange) return `${job.minSalary} - ${job.maxSalary} ${unit}`;
+                        if (job?.salary) return `${job.salary} ${unit}`.trim();
+                        return 'N/A';
+                      })()}
+                    </div>
+                  </div>
+                </div>
+
+                {/* CTC Card */}
+                <div className="bg-white rounded-lg p-3 border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
+                  <div className="flex items-center gap-2 mb-1">
+                    <div className="w-6 h-6 bg-green-100 rounded-lg flex items-center justify-center">
+                      <svg className="w-3 h-3 text-green-600" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M8.433 7.418c.155-.103.346-.196.567-.267v1.698a2.305 2.305 0 01-.567-.267C8.07 8.34 8 8.114 8 8c0-.114.07-.34.433-.582zM11 12.849v-1.698c.22.071.412.164.567.267.364.243.433.468.433.582 0 .114-.07.34-.433.582a2.305 2.305 0 01-.567.267z" />
+                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-13a1 1 0 10-2 0v.092a4.535 4.535 0 00-1.676.662C6.602 6.234 6 7.009 6 8c0 .99.602 1.765 1.324 2.246.48.32 1.054.545 1.676.662v1.941c-.391-.127-.68-.317-.843-.504a1 1 0 10-1.51 1.31c.562.649 1.413 1.076 2.353 1.253V15a1 1 0 102 0v-.092a4.535 4.535 0 001.676-.662C13.398 13.766 14 12.991 14 12c0-.99-.602-1.765-1.324-2.246A4.535 4.535 0 0011 9.092V7.151c.391.127.68.317.843.504a1 1 0 101.511-1.31c-.563-.649-1.413-1.076-2.354-1.253V5z" clipRule="evenodd" />
+                      </svg>
+                    </div>
+                    <span className="text-xs font-medium text-gray-500">CTC</span>
+                  </div>
+                  <div className="text-sm text-gray-900 font-semibold space-y-1">
+                    <div>
+                      <span className="text-gray-500 mr-2">CTC:</span>
+                      {(() => {
+                        const hasRange = job?.minCtc && job?.maxCtc;
+                        const unit = job?.ctcUnit || '';
+                        if (hasRange) return `${job.minCtc} - ${job.maxCtc} ${unit}`;
+                        if (job?.ctc) return `${job.ctc} ${unit}`.trim();
+                        return 'N/A';
+                      })()}
+                    </div>
+                  </div>
+                </div>
+
+
+
+
+
+
             
                {/* Internship Duration */}
                <div className="bg-white rounded-lg p-3 border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
@@ -1210,7 +1408,7 @@ const JobApplications = () => {
                  </div>
                  <p className="text-gray-900 font-semibold text-sm">{job?.modeOfVisit || 'N/A'}</p>
                  <p className="text-xs text-gray-500">
-                   {job?.dateOfVisit ? new Date(job.dateOfVisit).toLocaleDateString() : 'N/A'}
+                   {job?.dateOfVisit ? (job.dateOfVisit.toDate ? job.dateOfVisit.toDate().toLocaleDateString() : new Date(job.dateOfVisit).toLocaleDateString()) : 'N/A'}
                  </p>
                </div>
              </div>
@@ -1313,20 +1511,37 @@ const JobApplications = () => {
                          <span className="text-gray-600 font-medium">Location</span>
                          <span className="text-gray-900 font-semibold">{job?.location || job?.jobLocation || 'N/A'}</span>
                        </div>
-                       <div className="flex justify-between items-center py-2 border-b border-gray-100">
-                         <span className="text-gray-600 font-medium">Salary/Stipend</span>
-                                          <p className="text-sl text-gray-900 font-semibold">
-                   {job?.minSalary && job?.maxSalary ? `${job.minSalary} - ${job.maxSalary} ${job.salaryUnit || ''}` : job?.salary || 'N/A'}
-                 </p>
-                    
-                       </div>
+                        <div className="flex justify-between items-center py-2 border-b border-gray-100">
+                          <span className="text-gray-600 font-medium">Salary/Stipend</span>
+                          <span className="text-gray-900 font-semibold">
+                            {(() => {
+                              const hasRange = job?.minSalary && job?.maxSalary;
+                              const unit = job?.salaryUnit || '';
+                              if (hasRange) return `${job.minSalary} - ${job.maxSalary} ${unit}`;
+                              if (job?.salary) return `${job.salary} ${unit}`.trim();
+                              return 'N/A';
+                            })()}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center py-2 border-b border-gray-100">
+                          <span className="text-gray-600 font-medium">CTC</span>
+                          <span className="text-gray-900 font-semibold">
+                            {(() => {
+                              const hasRange = job?.minCtc && job?.maxCtc;
+                              const unit = job?.ctcUnit || '';
+                              if (hasRange) return `${job.minCtc} - ${job.maxCtc} ${unit}`;
+                              if (job?.ctc) return `${job.ctc} ${unit}`.trim();
+                              return 'N/A';
+                            })()}
+                          </span>
+                        </div>
                        <div className="flex justify-between items-center py-2 border-b border-gray-100">
                          <span className="text-gray-600 font-medium">Application Deadline</span>
                          <span className="text-gray-900 font-semibold">
                            {job?.deadline
-                             ? new Date(job.deadline).toLocaleString()
+                             ? (job.deadline.toDate ? job.deadline.toDate().toLocaleString() : new Date(job.deadline).toLocaleString())
                              : job?.applicationDeadline
-                               ? new Date(job.applicationDeadline).toLocaleString()
+                               ? (job.applicationDeadline.toDate ? job.applicationDeadline.toDate().toLocaleString() : new Date(job.applicationDeadline).toLocaleString())
                                : 'N/A'}
                          </span>
                        </div>
@@ -1334,9 +1549,9 @@ const JobApplications = () => {
                          <span className="text-gray-600 font-medium">Interview Date & Time</span>
                          <span className="text-gray-900 font-semibold">
                            {job?.interviewDateTime
-                             ? new Date(job.interviewDateTime).toLocaleString()
+                             ? (job.interviewDateTime.toDate ? job.interviewDateTime.toDate().toLocaleString() : new Date(job.interviewDateTime).toLocaleString())
                              : job?.interviewDate
-                               ? new Date(job.interviewDate).toLocaleString()
+                               ? (job.interviewDate.toDate ? job.interviewDate.toDate().toLocaleString() : new Date(job.interviewDate).toLocaleString())
                                : 'N/A'}
                          </span>
                        </div>

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { collection, getDocs, query, where, doc, getDoc, addDoc, serverTimestamp, updateDoc } from 'firebase/firestore';
+import { collection, getDocs, query, where, doc, getDoc, addDoc, serverTimestamp, updateDoc, onSnapshot, deleteDoc } from 'firebase/firestore';
 import { db, auth } from '../../firebase';
 import { getCurrentStudentRollNumber } from '../../utils/studentIdentity';
 import { ToastContainer, toast } from "react-toastify";
@@ -47,6 +47,8 @@ const JobDetails = () => {
   const [applicationStatuses, setApplicationStatuses] = useState({});
   const [applicationAnswers, setApplicationAnswers] = useState({});
   const [screeningAnswers, setScreeningAnswers] = useState({});
+  const [roundsStatus, setRoundsStatus] = useState({});
+  const [roundProgressPct, setRoundProgressPct] = useState(0);
   const [bondAgreed, setBondAgreed] = useState(false);
   const [studentProfile, setStudentProfile] = useState({
     cgpa: 0,
@@ -74,11 +76,61 @@ const JobDetails = () => {
     }
   }, [jobId]);
 
+  // Live subscribe to this student's application for this job to track round progress
+  useEffect(() => {
+    let unsubscribe = null;
+    const attach = async () => {
+      try {
+        if (!selectedJob) return;
+        const user = auth.currentUser;
+        if (!user) return;
+        const roll = await getCurrentStudentRollNumber();
+        const applicationsRef = collection(db, 'applications');
+        const q = roll
+          ? query(applicationsRef, where('jobId', '==', selectedJob.id), where('student_rollNumber', '==', roll))
+          : query(applicationsRef, where('jobId', '==', selectedJob.id), where('student_id', '==', user.uid));
+        const snap = await getDocs(q);
+        if (snap.empty) return;
+        const appDoc = snap.docs[0];
+        const appRef = doc(db, 'applications', appDoc.id);
+        unsubscribe = onSnapshot(appRef, (ds) => {
+          const data = ds.data() || {};
+          const studentRounds = (data.student && data.student.rounds) || {};
+          setRoundsStatus(studentRounds);
+          // Compute progress across selectedJob.rounds based on student's own completed rounds
+          const roundsArr = Array.isArray(selectedJob.rounds) ? selectedJob.rounds : [];
+          if (roundsArr.length <= 1) {
+            setRoundProgressPct(0);
+            return;
+          }
+          let highestCompletedIndex = -1;
+          roundsArr.forEach((r, index) => {
+            const name = r.name || r.roundName || `Round ${index + 1}`;
+            const status = name ? studentRounds[name] : undefined;
+            if (status === 'shortlisted' || status === 'selected') {
+              highestCompletedIndex = index;
+            }
+          });
+          const pct = highestCompletedIndex >= 0 
+            ? Math.round((highestCompletedIndex / (roundsArr.length - 1)) * 100)
+            : 0;
+          setRoundProgressPct(Math.max(0, Math.min(100, pct)));
+        });
+      } catch (e) {
+        // ignore
+      }
+    };
+    attach();
+    return () => {
+      if (typeof unsubscribe === 'function') unsubscribe();
+    };
+  }, [selectedJob]);
+
   // Calculate and update countdown timer
   useEffect(() => {
     if (!selectedJob?.deadline) return;
 
-    const deadline = new Date(selectedJob.deadline);
+    const deadline = selectedJob.deadline;
     
     const updateCountdown = () => {
       const now = new Date();
@@ -102,6 +154,13 @@ const JobDetails = () => {
     return () => clearInterval(interval);
   }, [selectedJob]);
 
+  // Check if deadline has passed
+  const hasDeadlinePassed = () => {
+    if (!selectedJob?.deadline) return false;
+    const deadline = selectedJob.deadline;
+    return new Date() > deadline;
+  };
+
   const fetchJobDetails = async () => {
     try {
       setLoading(true);
@@ -112,8 +171,8 @@ const JobDetails = () => {
         const jobData = {
           id: jobSnap.id,
           ...jobSnap.data(),
-          deadline: jobSnap.data().deadline ? new Date(jobSnap.data().deadline).toLocaleString() : 'No deadline',
-          interviewDateTime: jobSnap.data().interviewDateTime ? new Date(jobSnap.data().interviewDateTime).toLocaleString() : 'Not scheduled'
+          deadline: jobSnap.data().deadline ? new Date(jobSnap.data().deadline) : null,
+          interviewDateTime: jobSnap.data().interviewDateTime ? new Date(jobSnap.data().interviewDateTime) : null
         };
         setSelectedJob(jobData);
 
@@ -215,9 +274,12 @@ const JobDetails = () => {
         
         querySnapshot.docs.forEach(doc => {
           const data = doc.data();
-          jobIds.push(data.job_id);
-          statuses[data.job_id] = data.status;
-          answers[data.job_id] = data.screening_answers || {};
+          const jid = data.jobId || data.job_id;
+          if (jid) {
+            jobIds.push(jid);
+            statuses[jid] = data.status;
+            answers[jid] = data.screening_answers || {};
+          }
         });
         
         setAppliedJobs(jobIds);
@@ -242,14 +304,35 @@ const JobDetails = () => {
       const user = auth.currentUser;
       if (user) {
         const roll = await getCurrentStudentRollNumber();
-        await addDoc(collection(db, 'saved_jobs'), {
-          job_id: jobId,
-          student_id: user.uid,
-          student_rollNumber: roll || null,
-          saved_at: serverTimestamp()
-        });
-        setSavedJobs([...savedJobs, jobId]);
-        toast.success("Job saved successfully!");
+        const savedJobsRef = collection(db, 'saved_jobs');
+        
+        // Check if already saved
+        let q;
+        if (roll) {
+          q = query(savedJobsRef, where('student_rollNumber', '==', roll), where('job_id', '==', jobId));
+        } else {
+          q = query(savedJobsRef, where('student_id', '==', user.uid), where('job_id', '==', jobId));
+        }
+        
+        const existingSaved = await getDocs(q);
+        
+        if (!existingSaved.empty) {
+          // Unsave the job
+          const docToDelete = existingSaved.docs[0];
+          await docToDelete.ref.delete();
+          setSavedJobs(savedJobs.filter(id => id !== jobId));
+          toast.success("Job unsaved successfully!");
+        } else {
+          // Save the job
+          await addDoc(savedJobsRef, {
+            job_id: jobId,
+            student_id: user.uid,
+            student_rollNumber: roll || null,
+            saved_at: serverTimestamp()
+          });
+          setSavedJobs([...savedJobs, jobId]);
+          toast.success("Job saved successfully!");
+        }
       }
     } catch (error) {
       toast.error("Error saving job!");
@@ -278,7 +361,7 @@ const JobDetails = () => {
       const existingApplication = await getDocs(
         roll
           ? query(appsCol, where('jobId', '==', jobId), where('student_rollNumber', '==', roll))
-          : query(appsCol, where('jobId', '==', jobId), where('studentId', '==', auth.currentUser.uid))
+          : query(appsCol, where('jobId', '==', jobId), where('student_id', '==', auth.currentUser.uid))
       );
 
       if (!existingApplication.empty) {
@@ -287,13 +370,29 @@ const JobDetails = () => {
       }
 
       // Create application
+      console.log('Screening answers before submission:', screeningAnswers);
+      console.log('Selected job screening questions:', selectedJob.screeningQuestions);
+
+      // Normalize screening answers to ensure string keys for Firestore Map
+      const screeningAnswersToSave = (() => {
+        try {
+          if (!selectedJob?.screeningQuestions || selectedJob.screeningQuestions.length === 0) return {};
+          const entries = Object.entries(screeningAnswers || {}).map(([k, v]) => [String(k), v]);
+          return Object.fromEntries(entries);
+        } catch (e) {
+          console.warn('Failed to normalize screening answers, falling back:', e);
+          return screeningAnswers || {};
+        }
+      })();
+
       const applicationData = {
         jobId: jobId,
-        studentId: auth.currentUser.uid,
+        student_id: auth.currentUser.uid,
         student_rollNumber: roll || null,
         status: 'pending',
         appliedAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
+        screening_answers: screeningAnswersToSave, // Save normalized screening answers
         job: {
           position: selectedJob.position,
           company: selectedJob.company,
@@ -302,8 +401,12 @@ const JobDetails = () => {
           salary: selectedJob.salary
         }
       };
+      
+      console.log('Application data being submitted:', applicationData);
 
       const applicationRef = await addDoc(collection(db, 'applications'), applicationData);
+      console.log('Application submitted successfully with ID:', applicationRef.id);
+      console.log('Screening answers in submitted application:', applicationData.screening_answers);
 
       // Send notification to student
       try {
@@ -337,7 +440,11 @@ const JobDetails = () => {
 
     } catch (error) {
       console.error('Error applying for job:', error);
-      toast.error('Failed to submit application');
+      if (String(error?.message || '').toLowerCase().includes('already')) {
+        toast.error('You have already applied for this job');
+      } else {
+        toast.error('Failed to submit application');
+      }
     } finally {
       setApplying(false);
     }
@@ -708,7 +815,7 @@ case 'multiple-choice':
   };
 
   return (
-    <div className="container mx-auto px-3 sm:px-4 py-0 max-w-6xl">
+    <div className="container mx-auto px-0 sm:px-4 py-0 max-w-6xl">
       <ToastContainer style={{ zIndex: 9999 }} />
       
       {/* Back button */}
@@ -751,28 +858,40 @@ case 'multiple-choice':
                         <span>{selectedJob.workMode || 'Not specified'}</span>
                       </div>
 
-                      <div className="flex items-center">
-                        <IndianRupee size={18} className="mr-2 opacity-75" />
-                        {typeof selectedJob.jobTypes === 'string' && selectedJob.jobTypes.toLowerCase().includes('intern') ? (
-                          <span>
-                            Stipend:{' '}
-                            {selectedJob.minSalary || selectedJob.maxSalary
-                              ? `₹${selectedJob.minSalary || '—'} - ₹${selectedJob.maxSalary || '—'}/${selectedJob.salaryUnit?.toLowerCase() === 'monthly' ? 'month' : selectedJob.salaryUnit}`
-                              : (selectedJob.salary
-                                  ? `₹${selectedJob.salary}/${selectedJob.salaryUnit?.toLowerCase() === 'monthly' ? 'month' : selectedJob.salaryUnit}`
-                                  : 'Not specified')}
-                          </span>
-                        ) : (
-                          <span>
-                            CTC:{' '}
-                            {selectedJob.minCtc || selectedJob.maxCtc
-                              ? `₹${selectedJob.minCtc || '—'} - ₹${selectedJob.maxCtc || '—'}/${selectedJob.ctcUnit?.toLowerCase() === 'yearly' ? 'year' : selectedJob.ctcUnit}`
-                              : (selectedJob.ctc
-                                  ? `₹${selectedJob.ctc}/${selectedJob.ctcUnit?.toLowerCase() === 'yearly' ? 'year' : selectedJob.ctcUnit}`
-                                  : 'Not specified')}
-                          </span>
-                        )}
-                      </div>
+                      <div className="flex flex-col text-sm">
+                            {/* Show Stipend first if available */}
+                            {selectedJob.minSalary || selectedJob.maxSalary || selectedJob.salary ? (
+                              <div className="flex items-center mb-1">
+                                <IndianRupee size={18} className="mr-2 opacity-75" />
+                                <span>
+                                  Stipend:{' '}
+                                  {selectedJob.minSalary || selectedJob.maxSalary
+                                    ? `₹${selectedJob.minSalary || '—'} - ₹${selectedJob.maxSalary || '—'}/${selectedJob.salaryUnit?.toLowerCase() === 'monthly' ? 'month' : selectedJob.salaryUnit}`
+                                    : selectedJob.salary
+                                    ? `₹${selectedJob.salary}/${selectedJob.salaryUnit?.toLowerCase() === 'monthly' ? 'month' : selectedJob.salaryUnit}`
+                                    : 'Not specified'}
+                                </span>
+                              </div>
+                            ) : null}
+
+                            {/* Show CTC next if available */}
+                            {selectedJob.minCtc || selectedJob.maxCtc || selectedJob.ctc ? (
+                              <div className="flex items-center">
+                                <IndianRupee size={18} className="mr-2 opacity-75" />
+                                <span>
+                                  CTC:{' '}
+                                  {selectedJob.minCtc || selectedJob.maxCtc
+                                    ? `₹${selectedJob.minCtc || '—'} - ₹${selectedJob.maxCtc || '—'}/${selectedJob.ctcUnit?.toLowerCase() === 'yearly' ? 'year' : selectedJob.ctcUnit}`
+                                    : selectedJob.ctc
+                                    ? `₹${selectedJob.ctc}/${selectedJob.ctcUnit?.toLowerCase() === 'yearly' ? 'year' : selectedJob.ctcUnit}`
+                                    : 'Not specified'}
+                                </span>
+                              </div>
+                            ) : null}
+                          </div>
+
+
+
                     </div>
 
 
@@ -797,16 +916,24 @@ case 'multiple-choice':
             <button
               onClick={async () => {
                 try {
-                  // Check if already joined
+                  // Resolve this student's application robustly (rollNumber, student_id, or studentId)
                   const appsRef = collection(db, 'applications');
-                  const q1 = query(appsRef, where('student_id', '==', auth.currentUser.uid), where('jobId', '==', selectedJob.id));
-                  const snap = await getDocs(q1);
-                  const alreadyJoined = !snap.empty && (snap.docs[0].data().hasJoinedChat === true);
-                  if (!alreadyJoined) {
-                    const confirmJoin = window.confirm('Join discussion for this job? You will start receiving chat notifications.');
+                  const roll = await getCurrentStudentRollNumber();
+                  const queriesToTry = [];
+                  if (roll) queriesToTry.push(query(appsRef, where('jobId', '==', selectedJob.id), where('student_rollNumber', '==', roll)));
+                  queriesToTry.push(query(appsRef, where('jobId', '==', selectedJob.id), where('student_id', '==', auth.currentUser.uid)));
+                  queriesToTry.push(query(appsRef, where('jobId', '==', selectedJob.id), where('studentId', '==', auth.currentUser.uid)));
+
+                  let applicationDoc = null;
+                  for (const qTry of queriesToTry) {
+                    const s = await getDocs(qTry);
+                    if (!s.empty) { applicationDoc = s.docs[0]; break; }
+                  }
+
+                  const alreadyJoined = !!applicationDoc && (applicationDoc.data().hasJoinedChat === true);
+                  if (!alreadyJoined && applicationDoc) {
+                    const confirmJoin = window.confirm('Join?');
                     if (!confirmJoin) return;
-                    // Mark joined
-                    const applicationDoc = snap.docs[0];
                     await updateDoc(doc(db, 'applications', applicationDoc.id), {
                       hasJoinedChat: true,
                       lastChatActivity: serverTimestamp()
@@ -824,37 +951,51 @@ case 'multiple-choice':
               Discussion
             </button>
             
-            {!isSaved && (
-              <button
-                onClick={() => handleSaveJob(selectedJob.id)}
-                className="flex items-center gap-2 px-4 py-3 bg-white text-blue-700 rounded-lg hover:bg-gray-100 transition-colors shadow-md"
-              >
-                <Save size={18} />
-                Save Job
-              </button>
-            )}
+            <button
+              onClick={() => handleSaveJob(selectedJob.id)}
+              className={`flex items-center gap-2 px-4 py-3 rounded-lg transition-colors shadow-md ${
+                isSaved 
+                  ? 'bg-green-100 text-green-800 hover:bg-green-200'
+                  : 'bg-white text-blue-700 hover:bg-gray-100'
+              }`}
+            >
+              <Save size={18} />
+              {isSaved ? 'Saved' : 'Save Job'}
+            </button>
             
             {!isApplied && isEligible && !isWithdrawn && (
-              <button
-                onClick={() => {
-                  if (areAllMandatoryLinksVisited()) {
-                    if (selectedJob?.screeningQuestions?.length > 0) {
-                      setActiveTab('apply');
-                    } else {
-                      handleApply();
-                    }
-                  }
-                }}
-                className={`flex items-center gap-2 px-4 py-3 rounded-lg transition-colors shadow-md ${
-                  isEligible && areAllMandatoryLinksVisited()
-                    ? 'bg-green-600 text-white hover:bg-green-700'
-                    : 'bg-gray-400 text-gray-700 cursor-not-allowed'
-                }`}
-                disabled={!isEligible || !areAllMandatoryLinksVisited()} // Disable if not eligible or mandatory links not visited
-              >
-                <Send size={18} />
-                {isEligible && !areAllMandatoryLinksVisited() ? 'Visit Mandatory Links' : 'Apply Now'}
-              </button>
+              <>
+                {!hasDeadlinePassed() ? (
+                  <button
+                    onClick={() => {
+                      if (areAllMandatoryLinksVisited()) {
+                        if (selectedJob?.screeningQuestions?.length > 0) {
+                          setActiveTab('apply');
+                        } else {
+                          handleApply();
+                        }
+                      }
+                    }}
+                    className={`flex items-center gap-2 px-4 py-3 rounded-lg transition-colors shadow-md ${
+                      isEligible && areAllMandatoryLinksVisited()
+                        ? 'bg-green-600 text-white hover:bg-green-700'
+                        : 'bg-gray-400 text-gray-700 cursor-not-allowed'
+                    }`}
+                    disabled={!isEligible || !areAllMandatoryLinksVisited()}
+                  >
+                    <Send size={18} />
+                    {isEligible && !areAllMandatoryLinksVisited() ? 'Visit Mandatory Links' : 'Apply Now'}
+                  </button>
+                ) : (
+                  <button
+                    disabled
+                    className="flex items-center gap-2 px-4 py-3 bg-red-100 text-red-800 rounded-lg cursor-not-allowed shadow-md"
+                  >
+                    <Clock size={18} />
+                    Application deadline passed
+                  </button>
+                )}
+              </>
             )}
             
             {isApplied && !isWithdrawn && (
@@ -956,7 +1097,7 @@ case 'multiple-choice':
     Job Information
   </h3>
 
-  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+  <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
     {/* Example Card */}
     <JobInfoCard
       iconBg="bg-blue-100"
@@ -1005,7 +1146,7 @@ case 'multiple-choice':
       iconColor="text-red-600"
       icon={<Calendar size={12} />}
       label="Deadline"
-      value={selectedJob.deadline ? new Date(selectedJob.deadline).toLocaleDateString() : 'Not specified'}
+      value={selectedJob.deadline ? selectedJob.deadline.toLocaleDateString() : 'Not specified'}
     />
 
     <JobInfoCard
@@ -1013,7 +1154,7 @@ case 'multiple-choice':
       iconColor="text-indigo-600"
       icon={<CalendarClock size={12} />}
       label="Interview Date"
-      value={selectedJob.interviewDateTime ? new Date(selectedJob.interviewDateTime).toLocaleDateString() : 'Not scheduled'}
+      value={selectedJob.interviewDateTime ? selectedJob.interviewDateTime.toLocaleDateString() : 'Not scheduled'}
     />
 
     <JobInfoCard
@@ -1034,22 +1175,43 @@ case 'multiple-choice':
       />
     )}
 
-    {/* Salary / Stipend */}
+ {/* Salary / Stipend Section */}
+
+  {/* Stipend Card - show only if available */}
+  {(selectedJob.minSalary || selectedJob.maxSalary || selectedJob.salary) && (
     <JobInfoCard
       iconBg="bg-green-100"
       iconColor="text-green-600"
       icon={<IndianRupee size={12} />}
-      label={selectedJob.jobTypes?.includes('Internship') || (typeof selectedJob.jobTypes === 'string' && selectedJob.jobTypes.toLowerCase().includes('intern')) ? 'Stipend' : 'CTC'}
+      label="Stipend"
       value={
-        selectedJob.jobTypes?.includes('Internship') || (typeof selectedJob.jobTypes === 'string' && selectedJob.jobTypes.toLowerCase().includes('intern'))
-          ? (selectedJob.minSalary || selectedJob.maxSalary
-              ? `₹${selectedJob.minSalary || '—'} - ₹${selectedJob.maxSalary || '—'}/${selectedJob.salaryUnit?.toLowerCase() === 'monthly' ? 'month' : selectedJob.salaryUnit}`
-              : (selectedJob.salary ? `₹${selectedJob.salary}/${selectedJob.salaryUnit}` : 'Not specified'))
-          : (selectedJob.minCtc || selectedJob.maxCtc
-              ? `₹${selectedJob.minCtc || '—'} - ₹${selectedJob.maxCtc || '—'}/${selectedJob.ctcUnit?.toLowerCase() === 'yearly' ? 'year' : selectedJob.ctcUnit}`
-              : (selectedJob.ctc ? `₹${selectedJob.ctc}/${selectedJob.ctcUnit}` : 'Not specified'))
+        selectedJob.minSalary || selectedJob.maxSalary
+          ? `₹${selectedJob.minSalary || '—'} - ₹${selectedJob.maxSalary || '—'}/${selectedJob.salaryUnit?.toLowerCase() === 'monthly' ? 'month' : selectedJob.salaryUnit}`
+          : (selectedJob.salary
+              ? `₹${selectedJob.salary}/${selectedJob.salaryUnit?.toLowerCase() === 'monthly' ? 'month' : selectedJob.salaryUnit}`
+              : 'Not specified')
       }
     />
+  )}
+
+  {/* CTC Card - show only if available */}
+  {(selectedJob.minCtc || selectedJob.maxCtc || selectedJob.ctc) && (
+    <JobInfoCard
+      iconBg="bg-green-100"
+      iconColor="text-green-600"
+      icon={<IndianRupee size={12} />}
+      label="CTC"
+      value={
+        selectedJob.minCtc || selectedJob.maxCtc
+          ? `₹${selectedJob.minCtc || '—'} - ₹${selectedJob.maxCtc || '—'}/${selectedJob.ctcUnit?.toLowerCase() === 'yearly' ? 'year' : selectedJob.ctcUnit}`
+          : (selectedJob.ctc
+              ? `₹${selectedJob.ctc}/${selectedJob.ctcUnit?.toLowerCase() === 'yearly' ? 'year' : selectedJob.ctcUnit}`
+              : 'Not specified')
+      }
+    />
+  )}
+
+
 
     <JobInfoCard
       iconBg="bg-blue-100"
@@ -1151,6 +1313,18 @@ case 'multiple-choice':
                         ></div>
                       </div>
                       <div className="text-sm text-gray-600 mt-1">{calculateSkillMatch(selectedJob)}% match</div>
+                      {Array.isArray(selectedJob.rounds) && selectedJob.rounds.length > 0 && (
+                        <div className="mt-4">
+                          <p className="text-sm text-gray-500">Round Progress</p>
+                          <div className="w-full bg-gray-200 rounded-full h-3 mt-2">
+                            <div 
+                              className="bg-emerald-600 h-3 rounded-full transition-all duration-500"
+                              style={{ width: `${roundProgressPct}%` }}
+                            ></div>
+                          </div>
+                          <div className="text-sm text-gray-600 mt-1">{roundProgressPct}% completed</div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -1448,15 +1622,16 @@ case 'multiple-choice':
               <div className="mt-6 flex justify-end">
                 <button
                   onClick={() => handleApply()}
-                  disabled={!isFormValid() || applying}
+                  disabled={!isFormValid() || applying || hasDeadlinePassed()}
                   className={`px-6 py-3 rounded-lg transition-colors font-medium flex items-center ${
-                    !isFormValid() || applying
+                    !isFormValid() || applying || hasDeadlinePassed()
                       ? 'bg-gray-400 text-gray-600 cursor-not-allowed'
                       : 'bg-blue-600 text-white hover:bg-blue-700'
                   }`}
                 >
                   <Send size={18} className="mr-2" />
                   {applying ? 'Submitting...' : (
+                    hasDeadlinePassed() ? 'Application Deadline Passed' :
                     !isFormValid() 
                       ? (() => {
                           if (selectedJob?.bondRequired && !bondAgreed) {

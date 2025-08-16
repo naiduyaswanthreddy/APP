@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { collection, getDocs, query, orderBy, where, updateDoc, doc, onSnapshot, Timestamp, writeBatch } from 'firebase/firestore';
+import { collection, getDocs, query, orderBy, where, updateDoc, doc, onSnapshot, Timestamp, writeBatch, deleteDoc } from 'firebase/firestore';
 import { db, enablePushNotifications, onForegroundMessage } from '../../firebase';
 import { toast, ToastContainer } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
@@ -44,20 +44,6 @@ const Notifications = () => {
   };
 
   useEffect(() => {
-    // Request push permission
-    (async ()=>{ await enablePushNotifications(); })();
-    // Foreground push updates list
-    const unsub = onForegroundMessage((payload)=>{
-      const notif = {
-        id: Date.now().toString(),
-        title: payload.notification?.title || 'Notification',
-        message: payload.notification?.body || '',
-        type: payload.data?.type || 'system_alert',
-        timestamp: new Date(),
-        isRead: false
-      };
-      setNotifications(prev => [notif, ...prev]);
-    });
     // Set up real-time listener for notifications
     const setupNotificationsListener = () => {
       // Base query for admin notifications
@@ -112,17 +98,7 @@ const Notifications = () => {
           setNotifications(notificationsList);
           setLoading(false);
   
-          // Show toast for new notifications
-          const newNotifications = snapshot.docChanges()
-            .filter(change => change.type === 'added' && 
-                    // Check both isRead and read fields
-                    !change.doc.data().isRead && 
-                    !change.doc.data().read);
-          
-          newNotifications.forEach(change => {
-            const notification = change.doc.data();
-            toast.info(notification.title || 'New notification received');
-          });
+          // Suppress auto toast on page open/new items
         },
         (error) => {
           console.error('Error in notifications listener:', error);
@@ -134,7 +110,7 @@ const Notifications = () => {
     };
 
     const unsubscribe = setupNotificationsListener();
-    return () => { unsubscribe(); if (typeof unsub === 'function') unsub(); };
+    return () => { unsubscribe(); };
   }, [filter, timeFilter]);
 
   const handleMarkAsRead = async (notificationId) => {
@@ -198,6 +174,15 @@ const Notifications = () => {
     // Navigate to action link if provided
     if (notification.actionLink) {
       navigate(notification.actionLink);
+    }
+  };
+
+  const handleDelete = async (notificationId) => {
+    try {
+      await deleteDoc(doc(db, 'notifications', notificationId));
+      setNotifications(prev => prev.filter(n => n.id !== notificationId));
+    } catch (error) {
+      console.error('Error deleting notification:', error);
     }
   };
 
@@ -265,6 +250,28 @@ const Notifications = () => {
           >
             Mark All as Read
           </button>
+          {notifications.length > 0 && (
+            <button
+              onClick={async () => {
+                try {
+                  const batch = writeBatch(db);
+                  // Clear all admin notifications (recipientType == 'admin')
+                  const qAdmin = query(collection(db, 'notifications'), where('recipientType', '==', 'admin'));
+                  const sAdmin = await getDocs(qAdmin);
+                  sAdmin.forEach(d => batch.delete(doc(db, 'notifications', d.id)));
+                  await batch.commit();
+                  setNotifications([]);
+                  toast.success('All notifications cleared');
+                } catch (e) {
+                  console.error('Error clearing notifications:', e);
+                  toast.error('Failed to clear notifications');
+                }
+              }}
+              className="px-4 py-2 bg-gray-200 text-gray-800 rounded-md hover:bg-gray-300 text-sm"
+            >
+              Clear All
+            </button>
+          )}
         </div>
       </div>
       
@@ -316,7 +323,25 @@ const Notifications = () => {
                         <span className="ml-2 inline-block w-2 h-2 bg-blue-500 rounded-full"></span>
                       )}
                     </h3>
-                    <span className="text-xs text-gray-500">{formatTimestamp(notification.timestamp)}</span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleMarkAsRead(notification.id); }}
+                        className="text-green-600 hover:text-green-800"
+                        title="Mark as read"
+                        aria-label="Mark as read"
+                      >
+                        ✓
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleDelete(notification.id); }}
+                        className="text-red-600 hover:text-red-800"
+                        title="Delete"
+                        aria-label="Delete"
+                      >
+                        🗑
+                      </button>
+                      <span className="text-xs text-gray-500">{formatTimestamp(notification.timestamp)}</span>
+                    </div>
                   </div>
                   <p className="text-gray-600 mt-1">{notification.message}</p>
                   {notification.actionLink && (

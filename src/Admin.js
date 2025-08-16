@@ -140,14 +140,25 @@ const Admin = () => {
             ))}
           </nav>
   
-          {/* Logout Button */}
-          <button 
-            onClick={handleLogout}
-            className="flex items-center gap-3 px-4 py-2 rounded text-gray-300 hover:bg-white/10 mt-auto"
-          >
-            <LogOut size={20} />
-            {isSidebarOpen && 'Log Out'}
-          </button>
+          {/* Bottom Icons: Dashboard and Logout */}
+          <div className="mt-auto flex items-center justify-start gap-2 px-2 py-2">
+            <button
+              onClick={() => navigate('/admin/dashboard')}
+              className="p-2 rounded text-gray-300 hover:bg-white/10"
+              title="Dashboard"
+              aria-label="Dashboard"
+            >
+              <BarChart size={20} />
+            </button>
+            <button 
+              onClick={handleLogout}
+              className="p-2 rounded text-gray-300 hover:bg-white/10"
+              title="Log out"
+              aria-label="Log out"
+            >
+              <LogOut size={20} />
+            </button>
+          </div>
         </div>
       </div>
       {/* Main content area */}

@@ -33,13 +33,13 @@ const MobileSidebar = ({ isOpen, onClose, userData, unreadCount }) => {
     <>
       {/* Backdrop */}
       <div 
-        className="fixed inset-0 bg-black bg-opacity-50 z-40 md:hidden"
+        className="fixed inset-0 bg-black bg-opacity-50 z-[70] md:hidden"
         onClick={onClose}
         aria-hidden="true"
       />
       
       {/* Sidebar */}
-      <div className="fixed inset-y-0 left-0 w-64 bg-gradient-to-b from-indigo-900 to-teal-600 flex flex-col z-50 md:hidden">
+      <div className="fixed inset-y-0 left-0 w-64 bg-gradient-to-b from-indigo-900 to-teal-600 flex flex-col z-[80] md:hidden">
         <div className="flex-1 overflow-y-auto">
           {/* Header */}
           <div className="p-4 flex justify-between items-center">

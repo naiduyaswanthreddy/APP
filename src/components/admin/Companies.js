@@ -515,12 +515,21 @@ const Companies = () => {
 
     return (
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-        <div className="bg-white rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-          <h2 className="text-2xl font-bold mb-4">
-            {initialData ? 'Edit Company' : 'Add New Company'}
-          </h2>
+        <div className="bg-white rounded-2xl shadow-xl w-full max-w-3xl max-h-[90vh] overflow-y-auto">
+          <div className="p-6 border-b flex items-center justify-between sticky top-0 bg-white">
+            <h2 className="text-xl font-semibold">
+              {initialData ? 'Edit Company' : 'Add New Company'}
+            </h2>
+            <button
+              type="button"
+              onClick={() => { setShowAddForm(false); setEditingCompany(null); resetForm(); }}
+              className="px-3 py-1 rounded-md border hover:bg-gray-50"
+            >
+              Close
+            </button>
+          </div>
           
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} className="p-6 space-y-5">
             <div>
               <label className="block text-sm font-medium text-gray-700">Company Name</label>
               <input
@@ -545,7 +554,7 @@ const Companies = () => {
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700">Founded Year</label>
                 <input
@@ -616,7 +625,7 @@ const Companies = () => {
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700">Logo URL</label>
                 <input
@@ -640,7 +649,7 @@ const Companies = () => {
               </div>
             </div>
 
-            <div className="flex justify-end space-x-4">
+            <div className="flex justify-end space-x-3 pt-2 border-t">
               <button
                 type="button"
                 onClick={() => {

@@ -93,7 +93,11 @@ const Login = () => {
       }
     } catch (error) {
       console.error("Login error:", error);
-      setError("Invalid credentials. Please try again.");
+      if (error.code === 'auth/network-request-failed') {
+        setError("Network error. Please check your connection and refresh the page.");
+      } else {
+        setError("Invalid credentials. Please try again.");
+      }
       setLoading(false);
       // Clear role from storage if login fails
       localStorage.removeItem("userRole");

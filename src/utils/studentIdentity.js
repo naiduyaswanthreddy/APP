@@ -1,12 +1,10 @@
 import { auth, db } from '../firebase';
 import { doc, getDoc, query, where, collection, getDocs, updateDoc } from 'firebase/firestore';
 
-// Single source of truth for roll number format
-export const ROLL_NUMBER_REGEX = /^[A-Z0-9]{6,15}$/;
-
+// Accept any non-empty roll number (no strict format)
 export const isValidRollNumber = (rollNumber) => {
   try {
-    return typeof rollNumber === 'string' && ROLL_NUMBER_REGEX.test(rollNumber.trim().toUpperCase());
+    return typeof rollNumber === 'string' && rollNumber.trim().length > 0;
   } catch (_e) {
     return false;
   }
@@ -27,7 +25,7 @@ export const getCurrentStudentRollNumber = async () => {
         localStorage.setItem('rollNumber', roll);
         return roll;
       }
-      console.warn('Student record missing rollNumber. Falling back to uid in queries temporarily.');
+      // No roll set yet
       return null;
     }
     return null;

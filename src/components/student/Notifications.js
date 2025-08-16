@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { collection, getDocs, query, orderBy, where, updateDoc, doc, onSnapshot, writeBatch, serverTimestamp } from 'firebase/firestore';
+import { collection, getDocs, query, orderBy, where, updateDoc, doc, onSnapshot, writeBatch, serverTimestamp, deleteDoc } from 'firebase/firestore';
 import { db, auth } from '../../firebase';
 import { getCurrentStudentRollNumber } from '../../utils/studentIdentity';
-import { ToastContainer, toast } from 'react-toastify';
+import { ToastContainer } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import { Bell, Briefcase, CheckCircle, AlertCircle, Calendar, FileText, MessageSquare } from 'lucide-react';
 import LoadingSpinner from '../ui/LoadingSpinner';
@@ -95,18 +95,7 @@ const Notifications = () => {
       // In the handleNotificationsUpdate function
       const newNotifications = snapshot.docs.map(doc => {
         const data = doc.data();
-        // Check if this is a new notification
-        const isNew = source === 'user' && 
-          ((data.isRead === false) || (data.read === false)) && 
-          !notifications.some(n => n.id === doc.id);
-        
-        // Show toast for new notifications
-        if (isNew) {
-          toast.info(data.title, {
-            position: "top-right",
-            autoClose: 5000
-          });
-        }
+        // Suppress auto toasts on page
         
         return {
           id: doc.id,
@@ -190,7 +179,7 @@ const Notifications = () => {
   const markAsRead = async (notificationId) => {
     try {
       const notificationRef = doc(db, 'notifications', notificationId);
-      await updateDoc(notificationRef, { isRead: true });
+      await updateDoc(notificationRef, { isRead: true, read: true });
       
       // Update local state
       setNotifications(notifications.map(notification => 
@@ -210,17 +199,24 @@ const Notifications = () => {
       
       unreadNotifications.forEach(notification => {
         const notificationRef = doc(db, 'notifications', notification.id);
-        batch.update(notificationRef, { isRead: true });
+        batch.update(notificationRef, { isRead: true, read: true });
       });
       
       await batch.commit();
       
       // Update local state
       setNotifications(notifications.map(notification => ({ ...notification, isRead: true })));
-      toast.success('All notifications marked as read');
     } catch (error) {
       console.error('Error marking all notifications as read:', error);
-      toast.error('Failed to mark notifications as read');
+    }
+  };
+
+  const deleteNotification = async (notificationId) => {
+    try {
+      await deleteDoc(doc(db, 'notifications', notificationId));
+      setNotifications(prev => prev.filter(n => n.id !== notificationId));
+    } catch (error) {
+      console.error('Error deleting notification:', error);
     }
   };
 
@@ -233,7 +229,7 @@ const Notifications = () => {
   }
 
   return (
-    <div className="px-2 sm:px-6 py-6">
+    <div className="px-2 sm:px-6 py-6 pb-24 relative">
       <ToastContainer />
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-3">
@@ -251,6 +247,40 @@ const Notifications = () => {
               className="px-3 py-1 bg-blue-500 text-white rounded-full text-sm hover:bg-blue-600 transition-colors"
             >
               Mark all as read
+            </button>
+          )}
+          {notifications.length > 0 && (
+            <button
+              onClick={async () => {
+                try {
+                  const batch = writeBatch(db);
+                  const userId = auth.currentUser?.uid;
+                  if (!userId) return;
+                  // Delete user-specific notifications
+                  const roll = await getCurrentStudentRollNumber();
+                  if (roll) {
+                    const qRoll = query(collection(db, 'notifications'), where('recipientRoll', '==', roll));
+                    const sRoll = await getDocs(qRoll);
+                    sRoll.forEach(d => batch.delete(doc(db, 'notifications', d.id)));
+                  } else {
+                    const qUid = query(collection(db, 'notifications'), where('recipientId', '==', userId));
+                    const sUid = await getDocs(qUid);
+                    sUid.forEach(d => batch.delete(doc(db, 'notifications', d.id)));
+                  }
+                  // Mark general student notifications as read (don't delete global messages)
+                  const qGen = query(collection(db, 'notifications'), where('isGeneral', '==', true), where('recipientType', '==', 'student'));
+                  const sGen = await getDocs(qGen);
+                  sGen.forEach(d => batch.update(doc(db, 'notifications', d.id), { isRead: true, read: true }));
+                  await batch.commit();
+                  // Update local UI
+                  setNotifications([]);
+                } catch (e) {
+                  console.error('Error clearing notifications:', e);
+                }
+              }}
+              className="px-3 py-1 bg-gray-200 text-gray-800 rounded-full text-sm hover:bg-gray-300 transition-colors"
+            >
+              Clear all
             </button>
           )}
         </div>
@@ -292,9 +322,27 @@ const Notifications = () => {
                         <span className="ml-2 inline-block w-2 h-2 bg-blue-500 rounded-full"></span>
                       )}
                     </h3>
-                    <p className="text-sm text-gray-400">
-                      {notification.timestamp.toLocaleString()}
-                    </p>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); markAsRead(notification.id); }}
+                        className="text-green-600 hover:text-green-800"
+                        title="Mark as read"
+                        aria-label="Mark as read"
+                      >
+                        ✓
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); deleteNotification(notification.id); }}
+                        className="text-red-600 hover:text-red-800"
+                        title="Delete"
+                        aria-label="Delete"
+                      >
+                        🗑
+                      </button>
+                      <p className="text-sm text-gray-400">
+                        {notification.timestamp.toLocaleString()}
+                      </p>
+                    </div>
                   </div>
                   <p className="text-gray-600 mt-1">{notification.message}</p>
                   {notification.actionLink && (

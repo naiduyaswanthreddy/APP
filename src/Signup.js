@@ -138,7 +138,7 @@ const Signup = () => {
           
           {selectedRole === "student" && (
             <>
-              <input name="rollNumber" type="text" placeholder="Roll Number" onChange={handleChange} required pattern="^[A-Z0-9]{6,15}$" title="Use uppercase letters/numbers, 6-15 chars" className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none" />
+              <input name="rollNumber" type="text" placeholder="Roll Number" onChange={handleChange} required className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none" />
               <select name="program" onChange={handleChange} className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none" required>
                 <option value="">Select Degree</option>
                 <option value="BTech">BTech</option>
@@ -157,9 +157,9 @@ const Signup = () => {
                 <option value="AIE">AIE</option>
                 <option value="CCE">CCE</option>
               </select>
-              <input name="github" type="text" placeholder="GitHub Profile Link" onChange={handleChange} className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none" />
+              {/* <input name="github" type="text" placeholder="GitHub Profile Link" onChange={handleChange} className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none" />
               <input name="leetcode" type="text" placeholder="LeetCode Profile Link" onChange={handleChange} className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none" />
-              <input name="hackerrank" type="text" placeholder="HackerRank Profile Link" onChange={handleChange} className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none" />
+              <input name="hackerrank" type="text" placeholder="HackerRank Profile Link" onChange={handleChange} className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none" /> */}
             </>
           )}
 

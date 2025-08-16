@@ -51,17 +51,19 @@ const JobChat = ({ selectedJob, onClose }) => {
     
     try {
       const applicationsRef = collection(db, "applications");
-      const q = query(
-        applicationsRef, 
-        where("student_id", "==", auth.currentUser.uid),
-        where("jobId", "==", selectedJob.id)
-      );
-      
-      const querySnapshot = await getDocs(q);
-      
-      if (!querySnapshot.empty) {
-        // Update the application to mark that the student has joined the chat
-        const applicationDoc = querySnapshot.docs[0];
+      const roll = auth.currentUser ? (await getDoc(doc(db, 'students', auth.currentUser.uid))).data()?.rollNumber : null;
+      const candidates = [];
+      if (roll) candidates.push(query(applicationsRef, where("jobId", "==", selectedJob.id), where("student_rollNumber", "==", roll)));
+      candidates.push(query(applicationsRef, where("jobId", "==", selectedJob.id), where("student_id", "==", auth.currentUser.uid)));
+      candidates.push(query(applicationsRef, where("jobId", "==", selectedJob.id), where("studentId", "==", auth.currentUser.uid)));
+
+      let applicationDoc = null;
+      for (const q of candidates) {
+        const qs = await getDocs(q);
+        if (!qs.empty) { applicationDoc = qs.docs[0]; break; }
+      }
+
+      if (applicationDoc) {
         await updateDoc(doc(db, "applications", applicationDoc.id), {
           hasJoinedChat: true,
           lastChatActivity: serverTimestamp()
@@ -71,22 +73,23 @@ const JobChat = ({ selectedJob, onClose }) => {
         try {
           const otherApplicantsQuery = query(
             collection(db, 'applications'),
-            where("jobId", "==", selectedJob.id),
-            where("student_id", "!=", auth.currentUser.uid)
+            where("jobId", "==", selectedJob.id)
           );
           
           const otherApplicantsSnapshot = await getDocs(otherApplicantsQuery);
           otherApplicantsSnapshot.forEach(async (applicantDoc) => {
             const applicantData = applicantDoc.data();
-            try {
-              await createChatMessageNotification(
-                applicantData.student_id,
-                selectedJob,
-                'System',
-                `${auth.currentUser.displayName || 'A student'} has joined the chat for ${selectedJob.position}`
-              );
-            } catch (error) {
-              console.error('Error sending join notification:', error);
+            if ((applicantData.student_id || applicantData.studentId) !== auth.currentUser.uid) {
+              try {
+                await createChatMessageNotification(
+                  applicantData.student_id || applicantData.studentId,
+                  selectedJob,
+                  'System',
+                  `${auth.currentUser.displayName || 'A student'} has joined the chat for ${selectedJob.position}`
+                );
+              } catch (error) {
+                console.error('Error sending join notification:', error);
+              }
             }
           });
         } catch (error) {
