@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ToastContainer, toast } from "react-toastify";
+import { toast } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
-import { collection, addDoc, serverTimestamp, getDocs, query, where, doc, getDoc, updateDoc, deleteDoc, Timestamp } from 'firebase/firestore';
+import { collection, addDoc, serverTimestamp, getDocs, query, where, doc, getDoc, updateDoc, deleteDoc, Timestamp, writeBatch, runTransaction } from 'firebase/firestore';
 import { logJobActivity } from '../../utils/activityLogger';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { db, auth } from '../../firebase';
 import ReactQuill from 'react-quill';
 import 'react-quill/dist/quill.snow.css';
 import { createJobEventNotification, createSystemAlertNotification } from '../../utils/notificationHelpers';
+import { notifyJobPosted } from '../../utils/adminNotificationHelpers';
 
 const SKILL_SUGGESTIONS = [
   // Programming Languages
@@ -57,6 +58,18 @@ const PREDEFINED_ROUNDS = [
   "Behavioral Interview", "Thesis/Project Interview", "Others"
 ];
 
+// Helper to build a deterministic job ID from key fields
+const makeDeterministicJobId = (company, position, deadline) => {
+  const norm = (s) => (s || '')
+    .toString()
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/[^a-z0-9-]/g, '');
+  const deadlinePart = deadline ? new Date(deadline).toISOString().split('T')[0] : 'no-deadline';
+  return `job_${norm(company)}_${norm(position)}_${deadlinePart}`.slice(0, 200);
+};
+
 const AnimatedCard = ({ children }) => (
   <div
     className="bg-white/80 rounded-2xl p-8 mb-8 animate-fade-in border border-blue-100"
@@ -74,6 +87,9 @@ const JobPost = () => {
   const firstErrorRef = useRef(null);
   const location = useLocation();
   const navigate = useNavigate();
+  // Prevent rapid double submissions/updates
+  const submitLockRef = useRef(false);
+  const updateLockRef = useRef(false);
   const [editingJobId, setEditingJobId] = useState(null);
   const [editingJob, setEditingJob] = useState(null);
   const [previewMode, setPreviewMode] = useState(false);
@@ -346,12 +362,16 @@ const JobPost = () => {
         }
       }
       if (scheduledJobsToPublish.length > 0) {
-        for (const job of scheduledJobsToPublish) {
+        // Batch update status for all scheduled jobs first
+        const batch = writeBatch(db);
+        scheduledJobsToPublish.forEach((job) => {
           const jobRef = doc(db, 'jobs', job.id);
-          await updateDoc(jobRef, {
-            status: 'Open for Applications',
-            updatedAt: serverTimestamp()
-          });
+          batch.update(jobRef, { status: 'Open for Applications', updatedAt: serverTimestamp() });
+        });
+        await batch.commit();
+
+        // Then, for each job, create notifications
+        for (const job of scheduledJobsToPublish) {
           await createNotificationsForJob(job.id, job);
           console.log(`Published scheduled job: ${job.position} at ${job.company}`);
         }
@@ -498,7 +518,7 @@ const JobPost = () => {
       }
     });
     setErrors(newErrors);
-    return { isValid: Object.keys(newErrors).length === 0, firstErrorField };
+    return { isValid: Object.keys(newErrors).length === 0, firstErrorField, errorMap: newErrors };
   };
 
 
@@ -570,40 +590,72 @@ const JobPost = () => {
       if (!user) {
         throw new Error('No authenticated user found');
       }
+
+      // Check if notifications already exist for this job to prevent duplicates
+      const existingNotificationsQuery = query(
+        collection(db, 'notifications'), 
+        where('jobId', '==', jobId),
+        where('type', '==', 'job')
+      );
+      const existingNotifications = await getDocs(existingNotificationsQuery);
+      
+      if (!existingNotifications.empty) {
+        console.log(`Notifications already exist for job ${jobId}, skipping creation`);
+        return [];
+      }
+
       const studentsQuery = query(collection(db, 'students'));
       const studentsSnapshot = await getDocs(studentsQuery);
-      const notificationPromises = [];
-      studentsSnapshot.forEach(studentDoc => {
-        const studentData = studentDoc.data();
-        const isEligible = true;
-        if (isEligible) {
-          const notificationData = {
-            type: 'job',
-            title: `New Job Opening: ${jobData.position} at ${jobData.company}`,
-            message: `A new job opportunity is available for ${jobData.position} at ${jobData.company}.
+
+      // Firestore batch limit is 500 ops; keep a safe margin per batch
+      const BATCH_SIZE = 450;
+      let opsInBatch = 0;
+      let batch = writeBatch(db);
+      let createdCount = 0;
+
+      const commitBatch = async () => {
+        if (opsInBatch > 0) {
+          await batch.commit();
+          batch = writeBatch(db);
+          opsInBatch = 0;
+        }
+      };
+
+      for (const studentDoc of studentsSnapshot.docs) {
+        const isEligible = true; // TODO: refine eligibility if needed
+        if (!isEligible) continue;
+
+        const notifRef = doc(collection(db, 'notifications'));
+        batch.set(notifRef, {
+          type: 'job',
+          title: `New Job Opening: ${jobData.position} at ${jobData.company}`,
+          message: `A new job opportunity is available for ${jobData.position} at ${jobData.company}.
                     Salary: ${jobData.salary || jobData.ctc || 'Not specified'}
                     Location: ${jobData.location || 'Not specified'}
                     Deadline: ${new Date(jobData.deadline).toLocaleDateString()}`,
-            recipientType: 'student',
-            isGeneral: true,
-            timestamp: serverTimestamp(),
-            read: false,
-            actionUrl: `/student/jobs/${jobId}`,
-            jobId: jobId,
-            company: jobData.company,
-            position: jobData.position,
-            createdAt: serverTimestamp(),
-            createdBy: user.uid,
-            recipientId: studentDoc.id
-          };
-          notificationPromises.push(
-            addDoc(collection(db, 'notifications'), notificationData)
-          );
+          recipientType: 'student',
+          isGeneral: true,
+          timestamp: serverTimestamp(),
+          read: false,
+          actionUrl: `/student/jobs/${jobId}`,
+          jobId,
+          company: jobData.company,
+          position: jobData.position,
+          createdAt: serverTimestamp(),
+          createdBy: user.uid,
+          recipientId: studentDoc.id
+        });
+        opsInBatch += 1;
+        createdCount += 1;
+
+        if (opsInBatch >= BATCH_SIZE) {
+          await commitBatch();
         }
-      });
-      const notificationRefs = await Promise.all(notificationPromises);
-      console.log(`Created ${notificationPromises.length} notifications for job ${jobId}`);
-      return notificationRefs;
+      }
+
+      await commitBatch();
+      console.log(`Created ${createdCount} notifications for job ${jobId}`);
+      return createdCount;
     } catch (error) {
       console.error('Error in createNotificationsForJob:', error);
       throw error;
@@ -612,13 +664,34 @@ const JobPost = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!validateForm()) return;
+    if (submitLockRef.current) return;
+    submitLockRef.current = true;
+    setIsSubmitting(true);
+    
+    const { isValid, firstErrorField, errorMap } = validateForm();
+    if (!isValid) {
+      // Mark all error fields as touched so they show red and display messages
+      setTouched(prev => ({
+        ...prev,
+        ...Object.keys(errorMap).reduce((acc, key) => {
+          acc[key] = true;
+          return acc;
+        }, {})
+      }));
+      toast.error('Please fix all validation errors before submitting');
+      if (firstErrorField) {
+        scrollToField(firstErrorField);
+      }
+      setIsSubmitting(false);
+      submitLockRef.current = false;
+      return;
+    }
 
     try {
-      setIsSubmitting(true);
       const user = auth.currentUser;
       if (!user) {
         toast.error('Please login to create a job posting');
+        submitLockRef.current = false;
         return;
       }
 
@@ -642,46 +715,63 @@ const JobPost = () => {
         filledPositions: 0
       };
 
-      // Prevent duplicate posts by checking for a similar recent job
-      const existingDocs = await getDocs(query(collection(db, 'jobs'), where('company', '==', jobForm.company), where('position', '==', jobForm.position)));
-      if (!existingDocs.empty) {
-        const anyDoc = existingDocs.docs[0];
-        const existing = anyDoc.data();
-        const existingDeadline = existing.deadline ? new Date(existing.deadline) : null;
-        if (!existingDeadline || (jobForm.deadline && Math.abs(new Date(jobForm.deadline) - existingDeadline) < 1000)) {
-          toast.error('This job appears to be already posted. Aborting duplicate post.');
+      // Create job with a deterministic ID and transaction to prevent duplicates
+      const deterministicId = makeDeterministicJobId(jobForm.company, jobForm.position, jobForm.deadline);
+      const jobRef = doc(db, 'jobs', deterministicId);
+      try {
+        await runTransaction(db, async (tx) => {
+          const snap = await tx.get(jobRef);
+          if (snap.exists()) {
+            throw new Error('already_exists');
+          }
+          tx.set(jobRef, jobData);
+        });
+      } catch (err) {
+        if (String(err?.message || '').includes('already_exists')) {
+          toast.error('This job has already been posted. Duplicate prevented.');
           setIsSubmitting(false);
+          submitLockRef.current = false;
           return;
         }
+        throw err;
       }
 
-      // Add job to database
-      const docRef = await addDoc(collection(db, 'jobs'), jobData);
-      
-      // Create notifications for all students
-      await createNotificationsForJob(docRef.id, jobData);
+      // Create notifications for all students in chunked batches
+      await createNotificationsForJob(jobRef.id, jobData);
+
+      // Send push notifications to eligible students
+      try {
+        const notificationCount = await notifyJobPosted({ ...jobData, id: jobRef.id });
+        console.log(`Push notifications sent to ${notificationCount} eligible students`);
+      } catch (error) {
+        console.error('Error sending push notifications:', error);
+      }
 
       // Send admin notification about job creation
       try {
         await createJobEventNotification(
           'Job Posting Created',
           `New job posting "${jobForm.position}" at ${jobForm.company} has been created successfully.`,
-          `/admin/jobs/${docRef.id}`
+          `/admin/jobs/${jobRef.id}`
         );
       } catch (error) {
         console.error('Error sending admin notification:', error);
       }
 
       toast.success('Job posting created successfully!');
+      // Redirect admin back to Manage Applications after successful create
+      // Small delay to let toast render/dismiss safely before unmounting via navigation
+      setTimeout(() => navigate('/admin/manage-applications'), 600);
       resetForm();
       if (onJobCreated) {
-        onJobCreated(docRef.id);
+        onJobCreated(jobRef.id);
       }
     } catch (error) {
       console.error('Error creating job posting:', error);
       toast.error('Failed to create job posting');
     } finally {
       setIsSubmitting(false);
+      submitLockRef.current = false;
     }
   };
 
@@ -734,7 +824,7 @@ const JobPost = () => {
       ppoPportunity: false,
       bondRequired: false,
       bondDetails: '',
-      rounds: [{ name: '' }],
+      rounds: [{ name: 'Resume Screening' }],
       roundsDescription: '',
       skills: [],
       newSkill: '',
@@ -774,13 +864,36 @@ const JobPost = () => {
 
   const handleUpdate = async (e) => {
     e.preventDefault();
-    if (!validateForm() || (!editingJob && !editingJobId)) return;
+    if (updateLockRef.current) return;
+    updateLockRef.current = true;
+    setIsSubmitting(true);
+    
+    const { isValid, firstErrorField, errorMap } = validateForm();
+    if (!isValid || (!editingJob && !editingJobId)) {
+      if (!isValid) {
+        // Mark all error fields as touched so they show red and display messages
+        setTouched(prev => ({
+          ...prev,
+          ...Object.keys(errorMap).reduce((acc, key) => {
+            acc[key] = true;
+            return acc;
+          }, {})
+        }));
+        toast.error('Please fix all validation errors before updating');
+        if (firstErrorField) {
+          scrollToField(firstErrorField);
+        }
+      }
+      setIsSubmitting(false);
+      updateLockRef.current = false;
+      return;
+    }
 
     try {
-      setIsSubmitting(true);
       const user = auth.currentUser;
       if (!user) {
         toast.error('Please login to update a job posting');
+        updateLockRef.current = false;
         return;
       }
 
@@ -817,6 +930,9 @@ const JobPost = () => {
       }
 
       toast.success('Job posting updated successfully!');
+      // Redirect admin back to Manage Applications after successful update
+      // Small delay to allow toast lifecycle to complete before route change
+      setTimeout(() => navigate('/admin/manage-applications'), 600);
       resetForm();
       setEditingJob(null);
       if (onJobUpdated) {
@@ -827,6 +943,7 @@ const JobPost = () => {
       toast.error('Failed to update job posting');
     } finally {
       setIsSubmitting(false);
+      updateLockRef.current = false;
     }
   };
 
@@ -871,6 +988,7 @@ const JobPost = () => {
             value={jobForm[field]}
             onChange={e => setJobForm({...jobForm, [field]: type === 'number' ? parseFloat(e.target.value) : e.target.value})}
             onBlur={() => handleBlur(field)}
+            onWheel={type === 'number' ? (e) => e.target.blur() : undefined}
             placeholder={placeholder}
             min={type === 'number' ? "0" : undefined}
             step={type === 'number' ? "0.01" : undefined}
@@ -926,7 +1044,7 @@ const JobPost = () => {
 
   const getErrorFields = () => {
     return Object.entries(errors)
-      .filter(([field, error]) => touched[field] && error)
+      .filter(([_, error]) => !!error)
       .map(([field, error]) => ({
         field,
         error,
@@ -954,7 +1072,6 @@ const JobPost = () => {
 
   return (
     <div className="max-w-6.5xl mx-auto p-8 bg-white rounded-lg shadow-lg">
-      <ToastContainer />
       <button
           className="px-0 py-0 font-medium text-gray-500 hover:text-gray-700 mr-4"
           onClick={() => navigate('/admin/manage-applications')}
@@ -1013,6 +1130,27 @@ const JobPost = () => {
               box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.5);
             }
           `}</style>
+          {(isSubmitting || Object.keys(touched).length > 0) && Object.keys(errors).length > 0 && (
+            <div className="border border-red-300 bg-red-50 rounded-lg p-4">
+              <div className="flex items-center mb-2">
+                <span className="text-red-600 font-semibold mr-2">Validation errors found:</span>
+                <span className="text-red-600">{getErrorFields().length} field(s) need attention</span>
+              </div>
+              <ul className="list-disc list-inside text-red-700 space-y-1">
+                {getErrorFields().map(({ field, label, error }) => (
+                  <li key={field}>
+                    <button
+                      type="button"
+                      className="underline hover:no-underline hover:text-red-800"
+                      onClick={() => scrollToField(field)}
+                    >
+                      {label}: {error}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           <AnimatedCard>
             <h3 className="text-xl font-semibold text-gray-700 mb-4 pl-4 border-l-4 border-blue-500 flex items-center">
               1. Company Overview
@@ -1261,6 +1399,7 @@ const JobPost = () => {
                       min="1"
                       className={`w-full p-3 border ${touched.internshipDuration && errors.internshipDuration ? 'border-red-500' : 'border-gray-300'} rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition`}
                       value={jobForm.internshipDuration}
+                      onWheel={(e) => e.target.blur()}
                       onChange={e => setJobForm({...jobForm, internshipDuration: e.target.value})}
                       onBlur={() => handleBlur('internshipDuration')}
                       placeholder="Duration"
@@ -1312,6 +1451,7 @@ const JobPost = () => {
                   min="0"
                   max="10"
                   step="0.01"
+                  onWheel={(e) => e.target.blur()}
                   className={`w-full p-3 border ${touched.minCGPA && errors.minCGPA ? 'border-red-500' : 'border-gray-300'} rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition`}
                   value={jobForm.minCGPA}
                   onChange={e => setJobForm({...jobForm, minCGPA: parseFloat(e.target.value)})}
@@ -1327,6 +1467,7 @@ const JobPost = () => {
                     min="0"
                     max="10"
                     step="0.01"
+                    onWheel={(e) => e.target.blur()}
                     className={`w-full p-3 border ${touched.maxCGPA && errors.maxCGPA ? 'border-red-500' : 'border-gray-300'} rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition`}
                     value={jobForm.maxCGPA}
                     onChange={e => setJobForm({...jobForm, maxCGPA: parseFloat(e.target.value)})}
@@ -1343,6 +1484,7 @@ const JobPost = () => {
                   min="0"
                   className={`w-full p-3 border ${touched.maxCurrentArrears && errors.maxCurrentArrears ? 'border-red-500' : 'border-gray-300'} rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition`}
                   value={jobForm.maxCurrentArrears}
+                  onWheel={(e) => e.target.blur()}
                   onChange={e => setJobForm({...jobForm, maxCurrentArrears: parseInt(e.target.value)})}
                   onBlur={() => handleBlur('maxCurrentArrears')}
                 />
@@ -1354,6 +1496,7 @@ const JobPost = () => {
                   min="0"
                   className={`w-full p-3 border ${touched.maxHistoryArrears && errors.maxHistoryArrears ? 'border-red-500' : 'border-gray-300'} rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition`}
                   value={jobForm.maxHistoryArrears}
+                  onWheel={(e) => e.target.blur()}
                   onChange={e => setJobForm({...jobForm, maxHistoryArrears: parseInt(e.target.value)})}
                   onBlur={() => handleBlur('maxHistoryArrears')}
                 />
@@ -1572,6 +1715,7 @@ const JobPost = () => {
                         step="100"
                         min="0"
                         className={`w-full p-3 border ${errors.ctc && touched.ctc ? 'border-red-500' : 'border-gray-300'} rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition`}
+                        onWheel={(e) => e.target.blur()}
                         value={jobForm.ctc}
                         onChange={e => {
                           const value = e.target.value;
@@ -1606,6 +1750,7 @@ const JobPost = () => {
                         step="100"
                         min="0"
                         className={`w-full p-3 border ${errors.minCtc && touched.minCtc ? 'border-red-500' : 'border-gray-300'} rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition`}
+                        onWheel={(e) => e.target.blur()}
                         value={jobForm.minCtc}
                         onChange={e => {
                           const value = e.target.value;
@@ -1623,6 +1768,7 @@ const JobPost = () => {
                         step="100"
                         min="0"
                         className={`w-full p-3 border ${errors.maxCtc && touched.maxCtc ? 'border-red-500' : 'border-gray-300'} rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition`}
+                        onWheel={(e) => e.target.blur()}
                         value={jobForm.maxCtc}
                         onChange={e => {
                           const value = e.target.value;
@@ -1674,6 +1820,7 @@ const JobPost = () => {
                         step="100"
                         min="0"
                         className={`w-full p-3 border ${errors.salary && touched.salary ? 'border-red-500' : 'border-gray-300'} rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition`}
+                        onWheel={(e) => e.target.blur()}
                         value={jobForm.salary}
                         onChange={e => {
                           const value = e.target.value;
@@ -1708,6 +1855,7 @@ const JobPost = () => {
                         step="100"
                         min="0"
                         className={`w-full p-3 border ${errors.minSalary && touched.minSalary ? 'border-red-500' : 'border-gray-300'} rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition`}
+                        onWheel={(e) => e.target.blur()}
                         value={jobForm.minSalary}
                         onChange={e => {
                           const value = e.target.value;
@@ -1725,6 +1873,7 @@ const JobPost = () => {
                         step="100"
                         min="0"
                         className={`w-full p-3 border ${errors.maxSalary && touched.maxSalary ? 'border-red-500' : 'border-gray-300'} rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition`}
+                        onWheel={(e) => e.target.blur()}
                         value={jobForm.maxSalary}
                         onChange={e => {
                           const value = e.target.value;

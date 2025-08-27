@@ -3,8 +3,7 @@ import React, { useEffect, useState } from "react";
 import { db, auth } from "../../firebase";
 import { collection, getDocs, query, where, setDoc, doc } from "firebase/firestore";
 import { FaRegBookmark, FaBookmark, FaBook } from "react-icons/fa";
-import { ToastContainer, toast } from "react-toastify"; // Import toast
-import "react-toastify/dist/ReactToastify.css"; // Import CSS for toast
+import { toast } from "react-toastify"; // Import toast
 
 
 
@@ -122,7 +121,6 @@ const Resources = () => {
 
   return (
     <div className="px-3 sm:px-6 py-6 space-y-6 bg-gray-50 min-h-screen">
-      <ToastContainer /> {/* Add ToastContainer to render toasts */}
       {/* Header with Search and Bookmarked Button */}
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
         <h2 className="text-2xl font-semibold">Learning Resources</h2>

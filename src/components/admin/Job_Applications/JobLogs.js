@@ -36,16 +36,17 @@ const JobLogs = ({ jobId }) => {
         <p className="text-gray-500">No activity logs found.</p>
       ) : (
         <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
+          <div className="max-h-56 overflow-y-auto rounded border border-gray-100">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50 sticky top-0 z-10">
               <tr>
                 <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time</th>
                 <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th>
                 <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actor</th>
                 <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Details</th>
               </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
               {logs.map((log) => (
                 <tr key={log.id}>
                   <td className="px-4 py-2 text-sm text-gray-500">{log.timestamp?.toDate ? log.timestamp.toDate().toLocaleString() : ''}</td>
@@ -54,8 +55,9 @@ const JobLogs = ({ jobId }) => {
                   <td className="px-4 py-2 text-xs text-gray-600 whitespace-pre-wrap">{JSON.stringify(log.details || {}, null, 2)}</td>
                 </tr>
               ))}
-            </tbody>
-          </table>
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>

@@ -8,16 +8,12 @@ import {
 import { getDocs, collection } from 'firebase/firestore';
 import { logger } from '../../utils/logging';
 import { db } from '../../firebase';
-import { Chart as ChartJS, ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement, Title, PointElement, LineElement } from 'chart.js';
-import { Bar, Pie, Line } from 'react-chartjs-2';
 import LoadingSpinner from '../ui/LoadingSpinner';
-// {{ edit_1 }}
-// Import the new custom hook
 import useAnalyticsData from './useAnalyticsData';
-// {{ end_edit_1 }}
-
-
-ChartJS.register(
+import AnalyticsCharts from './AnalyticsCharts';
+import { Bar, Pie } from 'react-chartjs-2';
+import {
+  Chart as ChartJS,
   ArcElement,
   Tooltip,
   Legend,
@@ -25,9 +21,12 @@ ChartJS.register(
   LinearScale,
   BarElement,
   Title,
-  PointElement,
-  LineElement
-);
+} from 'chart.js';
+
+ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement, Title);
+
+
+
 
 const Analytics = () => {
   // Keep state variables related to UI interaction (filters, selected companies)
@@ -55,97 +54,232 @@ const Analytics = () => {
   const [viewName, setViewName] = useState('');
   const [showStudentDetails, setShowStudentDetails] = useState(false);
   const [showCompanyDetails, setShowCompanyDetails] = useState(false);
+  const [showEligibleList, setShowEligibleList] = useState(false);
+  const [showNotEligibleList, setShowNotEligibleList] = useState(false);
+  const [eligibilityLoading, setEligibilityLoading] = useState(false);
+  const [eligibleStudentsList, setEligibleStudentsList] = useState([]);
+  const [notEligibleStudentsList, setNotEligibleStudentsList] = useState([]);
 
-  // {{ edit_2 }}
-  // Use the custom hook and pass the filters state
+  // Fetch all data first
+  const [allStudents, setAllStudents] = useState([]);
+  const [allJobs, setAllJobs] = useState([]);
+  const [allApplications, setAllApplications] = useState([]);
+  const [dataLoading, setDataLoading] = useState(true);
+
+  // Fetch all data on component mount
+  useEffect(() => {
+    const fetchAllData = async () => {
+      try {
+        setDataLoading(true);
+        const [studentsSnapshot, jobsSnapshot, applicationsSnapshot] = await Promise.all([
+          getDocs(collection(db, 'students')),
+          getDocs(collection(db, 'jobs')),
+          getDocs(collection(db, 'applications'))
+        ]);
+
+        const students = studentsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        const jobs = jobsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        const applications = applicationsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+        setAllStudents(students);
+        setAllJobs(jobs);
+        setAllApplications(applications);
+      } catch (error) {
+        console.error('Error fetching data:', error);
+      } finally {
+        setDataLoading(false);
+      }
+    };
+
+    fetchAllData();
+  }, []);
+
+  // Use the custom hook and pass the filters state and all data
   const {
     summaryData,
     branchData,
     companyData,
     companyKPIs,
     funnelData,
-    roundData,
-    trendData,
-    demographicData,
     ctcDistribution,
-  } = useAnalyticsData(filters); // Pass filters here
-  // {{ end_edit_2 }}
+    eligibilityData,
+    loading: analyticsLoading,
+    error: analyticsError
+  } = useAnalyticsData(filters, allStudents, allJobs, allApplications);
 
   // Add state for dynamic batch and department options
   const [batchOptions, setBatchOptions] = useState([]);
   const [departmentOptions, setDepartmentOptions] = useState([]);
 
-  // Fetch department options from the database on mount
+  // Chart options
+  const pieOptions = useMemo(() => ({
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { position: 'bottom' },
+      title: { display: false },
+    },
+  }), []);
+
+  // Fetch department and batch options from the database on mount
   useEffect(() => {
-    async function fetchDepartments() {
+    async function fetchOptions() {
       try {
         const studentsSnapshot = await getDocs(collection(db, 'students'));
         const students = studentsSnapshot.docs.map(doc => doc.data());
         const departments = Array.from(new Set(students.map(s => s.department).filter(Boolean)));
+        const batches = Array.from(new Set(students.map(s => s.batch).filter(Boolean))).sort();
         setDepartmentOptions(departments);
+        setBatchOptions(batches);
       } catch (error) {
         setDepartmentOptions([]);
+        setBatchOptions([]);
       }
     }
-    fetchDepartments();
+    fetchOptions();
   }, []);
 
   // Add export functionality
   // Update the handleExport function
   const handleExport = () => {
-    const dataToExport = selectedCompanies.length > 0
-      ? companyKPIs.filter(kpi => selectedCompanies.includes(kpi.company))
-      : companyKPIs;
+    console.log('Export clicked, companyKPIs:', companyKPIs);
+    console.log('Selected companies:', selectedCompanies);
+    console.log('Summary data:', summaryData);
+    console.log('Branch data:', branchData);
+    
+    // Create comprehensive export data from all analytics data
+    const exportData = [];
+    
+    // Add summary data
+    if (summaryData) {
+      exportData.push({
+        Type: 'Summary',
+        Metric: 'Total Students',
+        Value: summaryData.totalStudents || 0
+      });
+      exportData.push({
+        Type: 'Summary',
+        Metric: 'Students Placed',
+        Value: summaryData.studentsPlaced || 0
+      });
+      exportData.push({
+        Type: 'Summary',
+        Metric: 'Placement Percentage',
+        Value: `${summaryData.placementPercentage || 0}%`
+      });
+      exportData.push({
+        Type: 'Summary',
+        Metric: 'Average CTC',
+        Value: `${summaryData.averageCtc || 0} LPA`
+      });
+      exportData.push({
+        Type: 'Summary',
+        Metric: 'Highest CTC',
+        Value: `${summaryData.highestCtc || 0} LPA`
+      });
+      exportData.push({
+        Type: 'Summary',
+        Metric: 'Total Companies',
+        Value: summaryData.totalCompanies || 0
+      });
+      exportData.push({
+        Type: 'Summary',
+        Metric: 'Total Applications',
+        Value: summaryData.totalApplications || 0
+      });
+    }
+    
+    // Add branch data
+    if (branchData && branchData.labels) {
+      branchData.labels.forEach((branch, index) => {
+        const totalStudents = branchData.datasets?.[0]?.data?.[index] || 0;
+        const placedStudents = branchData.datasets?.[1]?.data?.[index] || 0;
+        exportData.push({
+          Type: 'Branch',
+          Metric: `${branch} - Total Students`,
+          Value: totalStudents
+        });
+        exportData.push({
+          Type: 'Branch',
+          Metric: `${branch} - Placed Students`,
+          Value: placedStudents
+        });
+      });
+    }
+    
+    // Add company data
+    if (companyData && companyData.labels) {
+      companyData.labels.forEach((company, index) => {
+        const hires = companyData.datasets?.[0]?.data?.[index] || 0;
+        exportData.push({
+          Type: 'Company',
+          Metric: `${company} - Hires`,
+          Value: hires
+        });
+      });
+    }
+    
+    // Add company KPIs if available
+    if (companyKPIs && companyKPIs.length > 0) {
+      const dataToExport = selectedCompanies.length > 0
+        ? companyKPIs.filter(kpi => selectedCompanies.includes(kpi.company))
+        : companyKPIs;
+      
+      dataToExport.forEach(kpi => {
+        exportData.push({
+          Type: 'Company KPI',
+          Metric: `${kpi.company} - Applied`,
+          Value: kpi.applied || 0
+        });
+        exportData.push({
+          Type: 'Company KPI',
+          Metric: `${kpi.company} - Selected`,
+          Value: kpi.selected || 0
+        });
+      });
+    }
 
-    if (!dataToExport || dataToExport.length === 0) {
-      alert('No data available to export');
+    console.log('Final export data:', exportData);
+
+    if (!exportData || exportData.length === 0) {
+      alert('No analytics data available to export. Please wait for data to load.');
       return;
     }
 
     try {
-      const headers = [
-        'Company',
-        'Eligible Students',
-        'Applied',
-        'Applied %',
-        'Not Applied',
-        'Not Applied %',
-        'Selected',
-        'Selected %',
-        'Rejected',
-        'Rejected %'
-      ];
-
-      const csvData = [
+      const headers = ['Type', 'Metric', 'Value'];
+      const csvContent = [
         headers.join(','),
-        ...dataToExport.map(kpi => [
-          kpi.company,
-          kpi.eligible,
-          kpi.applied,
-          `${kpi.appliedPct}%`,
-          kpi.notApplied,
-          `${kpi.notAppliedPct}%`,
-          kpi.selected,
-          `${kpi.selectedPct}%`,
-          kpi.rejected,
-          `${kpi.rejectedPct}%`
-        ].join(','))
+        ...exportData.map(row => 
+          [row.Type, row.Metric, row.Value].map(cell => 
+            typeof cell === 'string' && cell.includes(',') ? `"${cell}"` : cell
+          ).join(',')
+        )
       ].join('\n');
 
-      const blob = new Blob([csvData], { type: 'text/csv;charset=utf-8;' });
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
       const link = document.createElement('a');
       const url = URL.createObjectURL(blob);
       link.setAttribute('href', url);
-      link.setAttribute('download', `placement_stats_${new Date().toISOString().split('T')[0]}.csv`);
+      link.setAttribute('download', `analytics_report_${new Date().toISOString().split('T')[0]}.csv`);
       link.style.visibility = 'hidden';
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
     } catch (error) {
-      console.error('Export failed:', error);
+      console.error('Export error:', error);
       alert('Failed to export data. Please try again.');
     }
   };
+
+  // Fix the export button condition
+  const hasExportableData = summaryData && (
+    summaryData.totalStudents > 0 || 
+    summaryData.studentsPlaced > 0 || 
+    (branchData && branchData.labels && branchData.labels.length > 0) ||
+    (companyData && companyData.labels && companyData.labels.length > 0) ||
+    (companyKPIs && companyKPIs.length > 0)
+  );
 
   // Update the handleFilterChange function
   const handleFilterChange = (e) => {
@@ -283,79 +417,307 @@ const Analytics = () => {
     fetchJobRoles();
   }, []);
 
-  const [eligibilityData, setEligibilityData] = useState(null);
-  const [eligibilityLoading, setEligibilityLoading] = useState(true);
-  const [showEligibleList, setShowEligibleList] = useState(false);
-  const [showNotEligibleList, setShowNotEligibleList] = useState(false);
-  const [eligibleStudentsList, setEligibleStudentsList] = useState([]);
-  const [notEligibleStudentsList, setNotEligibleStudentsList] = useState([]);
-
-  useEffect(() => {
-    async function fetchEligibilityData() {
-      setEligibilityLoading(true);
-      // Fetch students
-      const studentsSnapshot = await getDocs(collection(db, 'students'));
-      const students = studentsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      // Determine eligibility and reason
-      const eligibleStudents = [];
-      const notEligibleStudents = [];
-      students.forEach(s => {
-        if (
-          s.cgpa >= 6.0 &&
-          s.backlogs === 0 &&
-          s.attendance >= 75 &&
-          s.isFinalYear &&
-          !s.disciplinaryAction
-        ) {
-          eligibleStudents.push(s);
-        } else {
-          let reason = '';
-          if (s.cgpa < 6.0) reason = 'CGPA below 6.0';
-          else if (s.backlogs > 0) reason = 'Has active backlogs';
-          else if (s.attendance < 75) reason = 'Attendance below 75%';
-          else if (!s.isFinalYear) reason = 'Not in final year';
-          else if (s.disciplinaryAction) reason = 'Disciplinary action on record';
-          else reason = 'No reason provided';
-          notEligibleStudents.push({ ...s, notEligibleReason: reason });
-        }
-      });
-      setEligibilityData({
-        eligible: eligibleStudents.length,
-        notEligible: notEligibleStudents.length,
-      });
-      setEligibleStudentsList(eligibleStudents);
-      setNotEligibleStudentsList(notEligibleStudents);
-      setEligibilityLoading(false);
-    }
-    fetchEligibilityData();
-  }, []);
-
   // Add state for placement probability
   const [showPlacementProb, setShowPlacementProb] = useState(false);
   const [placementProbData, setPlacementProbData] = useState([]);
   const [placementProbLoading, setPlacementProbLoading] = useState(false);
+  // Reports modal state
+  const [showReports, setShowReports] = useState(false);
+
+  // CSV helper and Report generator inside component to access state
+  const downloadCSV = (filename, headers, rows) => {
+    try {
+      const csvContent = [
+        headers.join(','),
+        ...rows.map(r => headers.map(h => {
+          const cell = r[h] ?? '';
+          const s = String(cell);
+          return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s;
+        }).join(','))
+      ].join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      const url = URL.createObjectURL(blob);
+      link.setAttribute('href', url);
+      link.setAttribute('download', filename);
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (e) {
+      console.error('CSV download error:', e);
+      alert('Failed to download report.');
+    }
+  };
+
+  const handleDownloadReport = (reportKey) => {
+    const today = new Date().toISOString().split('T')[0];
+    const norm = (s) => (s || '').toString().trim().toLowerCase();
+    const selectedSet = new Set(allApplications.filter(a => ['selected', 'accepted'].includes(norm(a.status))).map(a => a.student_id || a.studentId));
+
+    const byBranch = (arr) => {
+      const map = new Map();
+      arr.forEach(s => {
+        const b = s.department || s.branch || 'Unknown';
+        map.set(b, (map.get(b) || 0) + 1);
+      });
+      return Array.from(map.entries()).map(([Branch, Count]) => ({ Branch, Count }));
+    };
+    const byCompanyOffers = () => {
+      const map = new Map();
+      allApplications.filter(a => ['selected', 'accepted'].includes(norm(a.status))).forEach(a => {
+        const job = allJobs.find(j => j.id === (a.job_id || a.jobId));
+        const company = a.companyName || a.company || job?.company || 'Unknown';
+        const ctc = a.offerCTC || a.package || a.ctc || job?.ctc || job?.salary || '';
+        const entry = map.get(company) || { company: company, offers: 0, min: null, max: null };
+        entry.offers += 1;
+        const parsed = parseFloat(String(ctc).toString().replace(/[^0-9\.]/g, '')) || 0;
+        entry.min = entry.min == null ? parsed : Math.min(entry.min, parsed);
+        entry.max = entry.max == null ? parsed : Math.max(entry.max, parsed);
+        map.set(company, entry);
+      });
+      return Array.from(map.values()).sort((a,b) => b.offers - a.offers);
+    };
+
+    const generators = {
+      placement_summary: () => {
+        const total = allStudents.length;
+        const placed = allStudents.filter(s => selectedSet.has(s.id)).length;
+        const avgCTC = (() => {
+          let sum = 0, cnt = 0;
+          allApplications.filter(a => ['selected', 'accepted'].includes(norm(a.status))).forEach(a => {
+            const job = allJobs.find(j => j.id === (a.job_id || a.jobId));
+            const ctc = a.offerCTC || a.package || a.ctc || job?.ctc || job?.salary;
+            const parsed = parseFloat(String(ctc).toString().replace(/[^0-9\.]/g, ''));
+            if (!isNaN(parsed)) { sum += parsed; cnt++; }
+          });
+          return cnt ? (sum / cnt).toFixed(2) : '0';
+        })();
+        const branchRows = byBranch(allStudents).map(r => ({ Metric: `Branch: ${r.Branch}`, Value: r.Count }));
+        const rows = [
+          { Metric: 'Total Students', Value: total },
+          { Metric: 'Students Placed', Value: placed },
+          { Metric: 'Placement %', Value: total ? ((placed/total)*100).toFixed(2) : '0' },
+          { Metric: 'Average Salary (raw units)', Value: avgCTC },
+          ...branchRows
+        ];
+        downloadCSV(`placement_summary_${today}.csv`, ['Metric', 'Value'], rows);
+      },
+      company_wise_placement: () => {
+        const data = byCompanyOffers();
+        const rows = data.map(d => ({ 'Company': d.company, 'Offers': d.offers, 'Lowest Package': d.min ?? '', 'Highest Package': d.max ?? '' }));
+        downloadCSV(`company_wise_placement_${today}.csv`, ['Company', 'Offers', 'Lowest Package', 'Highest Package'], rows);
+      },
+      eligibility: () => {
+        const rows = [];
+        allJobs.forEach(job => {
+          const crit = job.eligibility || job.eligibilityCriteria || '';
+          const minCgpa = job.minCgpa || job.min_cgpa || 0;
+          const noBacklogs = job.noBacklogs || false;
+          const eligible = allStudents.filter(s => {
+            const cg = parseFloat(s.cgpa || s.CGPA || 0) || 0;
+            const bl = parseInt(s.backlogs || s.activeBacklogs || 0) || 0;
+            let ok = cg >= minCgpa;
+            if (noBacklogs) ok = ok && bl === 0;
+            return ok;
+          });
+          eligible.forEach(s => rows.push({ 'Drive': job.title || job.position || job.company || job.id, 'Eligibility Criteria': crit || `CGPA>=${minCgpa}${noBacklogs?' & No Backlogs':''}`, 'Student': s.name || s.email || s.id }));
+        });
+        if (!rows.length) return alert('No eligibility data available from jobs.');
+        downloadCSV(`eligibility_${today}.csv`, ['Drive', 'Eligibility Criteria', 'Student'], rows);
+      },
+      offer_status: () => {
+        const rows = allApplications.map(a => {
+          const student = allStudents.find(s => s.id === (a.student_id || a.studentId));
+          const job = allJobs.find(j => j.id === (a.job_id || a.jobId));
+          return {
+            'Student': student?.name || student?.email || a.student_id || a.studentId,
+            'Company': a.companyName || a.company || job?.company || '',
+            'Offer Status': a.offerStatus || a.status || '',
+            'Joining Date': a.joiningDate || ''
+          };
+        });
+        downloadCSV(`offer_status_${today}.csv`, ['Student', 'Company', 'Offer Status', 'Joining Date'], rows);
+      },
+      rejected_candidates: () => {
+        const rows = allApplications.filter(a => norm(a.status) === 'rejected').map(a => {
+          const student = allStudents.find(s => s.id === (a.student_id || a.studentId));
+          const job = allJobs.find(j => j.id === (a.job_id || a.jobId));
+          return {
+            'Drive': job?.title || job?.position || job?.company || (a.companyName || a.company) || '',
+            'Student': student?.name || student?.email || a.student_id || a.studentId,
+            'Stage Reached': a.stage || a.round || '',
+            'Reason': a.rejectionReason || ''
+          };
+        });
+        if (!rows.length) return alert('No rejected candidates found.');
+        downloadCSV(`rejected_candidates_${today}.csv`, ['Drive', 'Student', 'Stage Reached', 'Reason'], rows);
+      },
+      internship: () => {
+        const rows = allApplications.filter(a => norm(a.type) === 'internship' || norm(a.offerType) === 'internship' || norm(a.roleType) === 'internship').map(a => {
+          const student = allStudents.find(s => s.id === (a.student_id || a.studentId));
+          const job = allJobs.find(j => j.id === (a.job_id || a.jobId));
+          return {
+            'Company': a.companyName || a.company || job?.company || '',
+            'Duration': a.duration || job?.duration || '',
+            'Stipend': a.stipend || job?.stipend || '',
+            'Branch': student?.department || student?.branch || ''
+          };
+        });
+        if (!rows.length) return alert('No internship data found.');
+        downloadCSV(`internship_${today}.csv`, ['Company', 'Duration', 'Stipend', 'Branch'], rows);
+      },
+      unplaced_students: () => {
+        const placedIds = selectedSet;
+        const rows = allStudents.filter(s => !placedIds.has(s.id)).map(s => ({ 'Student': s.name || s.email || s.id, 'Branch': s.department || s.branch || '', 'Skills': Array.isArray(s.skills) ? s.skills.join('; ') : (s.skills || '') , 'Preferred Roles': Array.isArray(s.preferredRoles) ? s.preferredRoles.join('; ') : (s.preferredRoles || '') }));
+        downloadCSV(`unplaced_students_${today}.csv`, ['Student', 'Branch', 'Skills', 'Preferred Roles'], rows);
+      },
+      yearly_stats: () => {
+        const map = new Map(); // year -> { branch -> { total, placed } }
+        allStudents.forEach(s => {
+          const year = s.batch || s.year || '';
+          const branch = s.department || s.branch || 'Unknown';
+          const placed = selectedSet.has(s.id) ? 1 : 0;
+          if (!map.has(year)) map.set(year, new Map());
+          const inner = map.get(year);
+          const agg = inner.get(branch) || { total: 0, placed: 0 };
+          agg.total += 1; agg.placed += placed;
+          inner.set(branch, agg);
+        });
+        const rows = [];
+        for (const [year, branches] of map.entries()) {
+          for (const [branch, agg] of branches.entries()) {
+            rows.push({ 'Year': year, 'Branch': branch, 'Students Placed': agg.placed, 'Total Students': agg.total });
+          }
+        }
+        downloadCSV(`yearly_placement_statistics_${today}.csv`, ['Year', 'Branch', 'Students Placed', 'Total Students'], rows);
+      },
+      branch_ratio: () => {
+        const rows = [];
+        const map = new Map();
+        allStudents.forEach(s => {
+          const branch = s.department || s.branch || 'Unknown';
+          const agg = map.get(branch) || { total: 0, placed: 0 };
+          agg.total += 1; agg.placed += selectedSet.has(s.id) ? 1 : 0;
+          map.set(branch, agg);
+        });
+        for (const [branch, agg] of map.entries()) {
+          rows.push({ 'Branch': branch, 'Total Students': agg.total, 'Placed Students': agg.placed, '% Placed': agg.total ? ((agg.placed/agg.total)*100).toFixed(2) : '0' });
+        }
+        downloadCSV(`branch_wise_ratio_${today}.csv`, ['Branch', 'Total Students', 'Placed Students', '% Placed'], rows);
+      },
+      salary_trend: () => {
+        const map = new Map(); // year -> { min, max, avg }
+        const entries = allApplications.filter(a => ['selected', 'accepted'].includes(norm(a.status))).map(a => {
+          const student = allStudents.find(s => s.id === (a.student_id || a.studentId));
+          const year = student?.batch || student?.year || 'Unknown';
+          const job = allJobs.find(j => j.id === (a.job_id || a.jobId));
+          const ctc = a.offerCTC || a.package || a.ctc || job?.ctc || job?.salary;
+          const val = parseFloat(String(ctc).toString().replace(/[^0-9\.]/g, ''));
+          return { year, val: isNaN(val) ? 0 : val };
+        }).filter(e => e.val > 0);
+        entries.forEach(e => {
+          const agg = map.get(e.year) || { total: 0, count: 0, min: null, max: null };
+          agg.total += e.val; agg.count += 1;
+          agg.min = agg.min == null ? e.val : Math.min(agg.min, e.val);
+          agg.max = agg.max == null ? e.val : Math.max(agg.max, e.val);
+          map.set(e.year, agg);
+        });
+        const rows = Array.from(map.entries()).map(([year, agg]) => ({ 'Year': year, 'Min CTC': agg.min ?? '', 'Max CTC': agg.max ?? '', 'Average CTC': agg.count ? (agg.total/agg.count).toFixed(2) : '' }));
+        if (!rows.length) return alert('No salary data found.');
+        downloadCSV(`salary_trend_${today}.csv`, ['Year', 'Min CTC', 'Max CTC', 'Average CTC'], rows);
+      },
+      alumni_history: () => { alert('Alumni Placement History depends on alumni dataset which is not available.'); },
+      category_wise: () => {
+        const rows = [];
+        allStudents.forEach(s => {
+          rows.push({ 'Student': s.name || s.email || s.id, 'Gender': s.gender || '', 'Category': s.category || s.caste || '', 'Placed': selectedSet.has(s.id) ? 'Yes' : 'No' });
+        });
+        downloadCSV(`category_wise_placement_${today}.csv`, ['Student', 'Gender', 'Category', 'Placed'], rows);
+      },
+      skill_based: () => {
+        const skillMap = new Map();
+        const placedIds = selectedSet;
+        allStudents.forEach(s => {
+          const skills = Array.isArray(s.skills) ? s.skills : (typeof s.skills === 'string' ? s.skills.split(/[;,]/).map(t => t.trim()).filter(Boolean) : []);
+          skills.forEach(sk => {
+            const agg = skillMap.get(sk) || { skill: sk, placed: 0 };
+            agg.placed += placedIds.has(s.id) ? 1 : 0;
+            skillMap.set(sk, agg);
+          });
+        });
+        const rows = Array.from(skillMap.values()).sort((a,b) => b.placed - a.placed).map(x => ({ 'Skill': x.skill, 'Students Placed with Skill': x.placed }));
+        if (!rows.length) return alert('No skills data found on students.');
+        downloadCSV(`skill_based_placement_${today}.csv`, ['Skill', 'Students Placed with Skill'], rows);
+      },
+      recruiter_retention: () => {
+        const map = new Map(); // company -> set of years
+        allJobs.forEach(j => {
+          const company = j.company || j.companyName || 'Unknown';
+          const year = (j.batch || j.year || (j.date ? new Date(j.date).getFullYear() : '')) || 'Unknown';
+          const set = map.get(company) || new Set();
+          set.add(year);
+          map.set(company, set);
+        });
+        const rows = Array.from(map.entries()).map(([company, years]) => ({ 'Company': company, 'Years Visited': Array.from(years).sort().join(', '), 'Visit Count': years.size }));
+        downloadCSV(`recruiter_retention_${today}.csv`, ['Company', 'Years Visited', 'Visit Count'], rows);
+      },
+      top_domains: () => {
+        const map = new Map();
+        allJobs.forEach(j => {
+          const domain = j.domain || j.industry || ((txt) => {
+            const t = txt.toLowerCase();
+            if (/(developer|software|it|sde|full\s*stack|frontend|backend)/.test(t)) return 'IT';
+            if (/(analytics|data|ml|ai|scientist|analyst)/.test(t)) return 'Analytics';
+            if (/(electrical|mechanical|civil|core)/.test(t)) return 'Core Engg';
+            return 'Other';
+          })(j.position || j.title || '');
+          map.set(domain, (map.get(domain) || 0) + 1);
+        });
+        const rows = Array.from(map.entries()).map(([Domain, Offers]) => ({ Domain, Offers }));
+        downloadCSV(`top_hiring_domains_${today}.csv`, ['Domain', 'Offers'], rows);
+      },
+      offer_conversion: () => {
+        const rows = [];
+        const companies = Array.from(new Set(allJobs.map(j => j.company || j.companyName).filter(Boolean)));
+        companies.forEach(company => {
+          const jobs = allJobs.filter(j => (j.company || j.companyName) === company);
+          const jobIds = new Set(jobs.map(j => j.id));
+          const apps = allApplications.filter(a => jobIds.has(a.job_id || a.jobId));
+          const eligible = apps.length > 0 ? new Set(apps.map(a => a.student_id || a.studentId)).size : 0; // proxy
+          const appeared = apps.length;
+          const placed = apps.filter(a => ['selected', 'accepted'].includes(norm(a.status))).length;
+          rows.push({ 'Company/Drive': company, 'Eligible Count (proxy)': eligible, 'Appeared (Applied) Count': appeared, 'Placed Count': placed });
+        });
+        downloadCSV(`offer_conversion_${today}.csv`, ['Company/Drive', 'Eligible Count (proxy)', 'Appeared (Applied) Count', 'Placed Count'], rows);
+      },
+      student_tests: () => { alert('Student test performance requires test score fields that are not present.'); },
+      prep_effectiveness: () => { alert('Preparation effectiveness requires mock vs placement test metrics.'); },
+      drive_clash: () => { alert('Drive clash analysis requires overlapping drive schedules and attendance.'); }
+    };
+
+    const fn = generators[reportKey];
+    if (!fn) return alert('Unknown report.');
+    fn();
+    setShowReports(false);
+  };
 
   // Compute placement probability whenever filters change
   useEffect(() => {
     async function fetchPlacementProbData() {
       setPlacementProbLoading(true);
       try {
-        // Fetch students and applications
-        const studentsSnapshot = await getDocs(collection(db, 'students'));
-        const students = studentsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        const applicationsSnapshot = await getDocs(collection(db, 'applications'));
-        const applications = applicationsSnapshot.docs.map(doc => doc.data());
-        // Apply filters (reuse logic from useAnalyticsData)
+        // Use already fetched data instead of refetching
         const batch = filters.batch;
         const department = filters.department;
-        const filteredStudents = students.filter(student => {
+        const filteredStudents = allStudents.filter(student => {
           const batchMatch = !batch || student.batch === batch;
           const departmentMatch = !department || student.department === department;
           return batchMatch && departmentMatch;
         });
         // Calculate probability (rule-based)
         const studentData = filteredStudents.map(student => {
-          const apps = applications.filter(app => app.student_id === student.id);
+          const apps = allApplications.filter(app => app.student_id === student.id);
           let probability = 0.2; // base
           if (student.cgpa >= 8.0) probability += 0.3;
           else if (student.cgpa >= 7.0) probability += 0.2;
@@ -377,8 +739,10 @@ const Analytics = () => {
       }
       setPlacementProbLoading(false);
     }
-    fetchPlacementProbData();
-  }, [filters]);
+    if (allStudents.length > 0 && allApplications.length > 0) {
+      fetchPlacementProbData();
+    }
+  }, [filters, allStudents, allApplications]);
 
   // Add state for department placement trends and average package analytics
   const [deptPlacementTrends, setDeptPlacementTrends] = useState({ labels: [], datasets: [] });
@@ -535,19 +899,19 @@ const Analytics = () => {
   const navigate = useNavigate();
   
   return (
-    <div className="p-6 space-y-6">
-      <h1 className="text-2xl font-bold text-gray-800 mb-4">Analytics Dashboard</h1>
+    <div className="p-6 space-y-6 bg-white dark:bg-gray-900 min-h-screen">
+      <h1 className="text-2xl font-bold text-gray-800 dark:text-gray-100 mb-4">Analytics Dashboard</h1>
       <div className="flex flex-row gap-4 w-full mb-6 items-start justify-between">
         <div className="flex gap-2">
           <button
-            className="flex items-center px-4 py-2 border rounded bg-white shadow hover:bg-gray-100"
+            className="flex items-center px-4 py-2 border rounded bg-white dark:bg-gray-800 shadow hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600"
             onClick={() => setShowFilters(true)}
           >
             <Filter className="mr-2" size={18} />
             Filters
           </button>
           <button
-            className="flex items-center px-4 py-2 border rounded bg-white shadow hover:bg-gray-100 text-red-600"
+            className="flex items-center px-4 py-2 border rounded bg-white dark:bg-gray-800 shadow hover:bg-gray-100 dark:hover:bg-gray-700 text-red-600 dark:text-red-400 border-gray-300 dark:border-gray-600"
             onClick={() => setFilters({
               batch: '',
               department: '',
@@ -561,7 +925,7 @@ const Analytics = () => {
             Reset Filters
           </button>
           <button
-            className="flex items-center px-4 py-2 border rounded bg-white shadow hover:bg-gray-100"
+            className="flex items-center px-4 py-2 border rounded bg-white dark:bg-gray-800 shadow hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600"
             onClick={() => setShowViews(true)}
           >
             <span className="mr-2">Views</span>
@@ -572,6 +936,13 @@ const Analytics = () => {
           >
             <UserCheck className="mr-2" size={18} />
             Placed Students
+          </button>
+          <button
+            className="flex items-center px-4 py-2 border rounded bg-blue-600 text-white shadow hover:bg-blue-700"
+            onClick={() => setShowReports(true)}
+          >
+            <Download className="mr-2" size={18} />
+            Reports
           </button>
         </div>
         {/* Removed student and company statistics cards here */}
@@ -715,7 +1086,7 @@ const Analytics = () => {
       {/* Conditionally render analytics sections */}
       {hasActiveFilters ? (
         // Render CompanyAnalyticsTable (filtered analytics)
-        <section>
+        <div>
           {/* You can move your company-wise analytics table and filtered summary here */}
           {/* Example: */}
           <section className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
@@ -723,13 +1094,13 @@ const Analytics = () => {
               <h3 className="text-lg font-semibold">🎯 Company-wise Recruitment Status (Filtered)</h3>
               <button
                 onClick={handleExport}
-                disabled={!filteredCompanyKPIs || filteredCompanyKPIs.length === 0}
-                className={`flex items-center px-4 py-2 rounded-lg ${
-                  filteredCompanyKPIs && filteredCompanyKPIs.length > 0
+                disabled={!hasExportableData}
+                className={`flex items-center px-4 py-2 rounded-md transition-colors duration-200 ${
+                  hasExportableData
                     ? 'bg-blue-500 text-white hover:bg-blue-600'
                     : 'bg-gray-300 text-gray-500 cursor-not-allowed'
                 }`}
-                title={filteredCompanyKPIs && filteredCompanyKPIs.length > 0 ? 'Export data to CSV' : 'No data available to export'}
+                title={hasExportableData ? 'Export analytics data to CSV' : 'No data available to export'}
               >
                 <Download size={16} className="mr-2" />
                 Export Data
@@ -784,15 +1155,14 @@ const Analytics = () => {
       <section className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
         <h3 className="text-lg font-semibold mb-4">📊 Application Funnel</h3>
         <div className="h-64">
-          {funnelData.datasets[0].data.some(d => d > 0) ? (
+          {funnelData && funnelData.datasets && funnelData.datasets[0] && funnelData.datasets[0].data && funnelData.datasets[0].data.some(d => d > 0) ? (
             <Bar options={funnelChartOptions} data={funnelData} />
           ) : (
             <p className="text-gray-500">No funnel data available.</p>
           )}
         </div>
       </section>
-          </section>
-          <section>
+      </section>
           <section className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
             <div className="flex flex-row gap-8 mb-8 flex-wrap">
               {/* Pie Chart */}
@@ -802,59 +1172,43 @@ const Analytics = () => {
                 <div className="w-[200px] h-[200px] flex items-center justify-center">
                   {eligibilityLoading ? (
                     <div>Loading chart...</div>
-                  ) : eligibilityData ? (
-                    <Pie
-                      data={{
-                        labels: ['Eligible', 'Not Eligible'],
-                        datasets: [
-                          {
-                            data: [
-                              eligibilityData.eligible,
-                              eligibilityData.notEligible,
-                            ],
-                            backgroundColor: [
-                              'rgba(75, 192, 192, 0.7)',
-                              'rgba(255, 99, 132, 0.7)',
-                            ],
-                          },
-                        ],
-                      }}
-                      options={{
-                        responsive: false,
-                        plugins: {
-                          legend: { position: 'bottom' },
-                        },
-                        maintainAspectRatio: false,
-                        onClick: (evt, elements) => {
-                          if (elements && elements.length > 0) {
-                            const idx = elements[0].index;
-                            if (idx === 0) setShowEligibleList(true);
-                            if (idx === 1) setShowNotEligibleList(true);
-                          }
-                        },
-                      }}
-                      width={200}
-                      height={200}
-                    />
+                  ) : eligibilityData && eligibilityData.labels && eligibilityData.datasets ? (
+                    <Pie data={eligibilityData} options={pieOptions} />
                   ) : (
-                    <div>No data available.</div>
+                    <div>No data available</div>
                   )}
                 </div>
               </div>
 
+              {/* Buttons */}
+              <div className="flex-1 w-[250px] p-4 bg-white rounded shadow flex flex-col items-center justify-center">
+                <h2 className="text-xl font-semibold mb-4 text-center">Quick Actions</h2>
+                <div className="flex flex-col gap-4 w-full">
+                  <button
+                    onClick={() => setShowEligibleList(true)}
+                    className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 w-full"
+                  >
+                    View Eligible Students ({eligibilityData?.datasets?.[0]?.data?.[0] || 0})
+                  </button>
+                  <button
+                    onClick={() => setShowNotEligibleList(true)}
+                    className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 w-full"
+                  >
+                    View Not Eligible Students ({eligibilityData?.datasets?.[0]?.data?.[1] || 0})
+                  </button>
+                </div>
+              </div>
             </div>
-            {/* Modal for eligible students */}
+
+            {/* Eligible Students Modal */}
             {showEligibleList && (
-              <div className="fixed inset-0 z-50 flex items-center justify-center">
-                <div className="absolute inset-0 bg-black bg-opacity-30 backdrop-blur-sm" onClick={() => setShowEligibleList(false)} />
-                <div className="relative bg-white rounded shadow-lg p-6 z-10 w-full max-w-md mx-auto max-h-[80vh] overflow-y-auto">
-                  <h2 className="text-lg font-semibold mb-4">Eligible Students</h2>
-                  <ul className="mb-4">
-                    {eligibleStudentsList.length === 0 && <li className="text-gray-500">No eligible students.</li>}
-                    {eligibleStudentsList.map((student) => (
-                      <li key={student.id} className="mb-2 border-b pb-1">
-                        <span className="font-medium">{student.name || student.email || student.id}</span>
-                        {student.department && <span className="ml-2 text-xs text-gray-500">({student.department})</span>}
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+                <div className="bg-white p-6 rounded-lg shadow-lg max-w-4xl w-full max-h-[80vh] overflow-y-auto">
+                  <h2 className="text-xl font-semibold mb-4">Eligible Students ({eligibleStudentsList.length})</h2>
+                  <ul className="space-y-2 mb-4">
+                    {eligibleStudentsList.map((student, index) => (
+                      <li key={index} className="p-2 border rounded">
+                        <strong>{student.name}</strong> - {student.email} ({student.department})
                       </li>
                     ))}
                   </ul>
@@ -864,21 +1218,16 @@ const Analytics = () => {
                 </div>
               </div>
             )}
-            {/* Modal for not eligible students */}
+
+            {/* Not Eligible Students Modal */}
             {showNotEligibleList && (
-              <div className="fixed inset-0 z-50 flex items-center justify-center">
-                <div className="absolute inset-0 bg-black bg-opacity-30 backdrop-blur-sm" onClick={() => setShowNotEligibleList(false)} />
-                <div className="relative bg-white rounded shadow-lg p-6 z-10 w-full max-w-md mx-auto max-h-[80vh] overflow-y-auto">
-                  <h2 className="text-lg font-semibold mb-4">Not Eligible Students</h2>
-                  <ul className="mb-4">
-                    {notEligibleStudentsList.length === 0 && <li className="text-gray-500">No not eligible students.</li>}
-                    {notEligibleStudentsList.map((student) => (
-                      <li key={student.id} className="mb-2 border-b pb-1">
-                        <span className="font-medium">{student.name || student.email || student.id}</span>
-                        {student.department && <span className="ml-2 text-xs text-gray-500">({student.department})</span>}
-                        <div className="text-xs text-red-500 mt-1">
-                          Reason: {student.notEligibleReason || student.reason || 'No reason provided'}
-                        </div>
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+                <div className="bg-white p-6 rounded-lg shadow-lg max-w-4xl w-full max-h-[80vh] overflow-y-auto">
+                  <h2 className="text-xl font-semibold mb-4">Not Eligible Students ({notEligibleStudentsList.length})</h2>
+                  <ul className="space-y-2 mb-4">
+                    {notEligibleStudentsList.map((student, index) => (
+                      <li key={index} className="p-2 border rounded">
+                        <strong>{student.name}</strong> - {student.email} ({student.department})
                       </li>
                     ))}
                   </ul>
@@ -889,298 +1238,20 @@ const Analytics = () => {
               </div>
             )}
           </section>
-          </section>
-
-        </section>
+        </div>
       ) : (
-        // Render OverallAnalytics (unfiltered analytics)
-        <section>
-          {/* You can move your overall summary cards and charts here */}
-          {/* Example: */}
-          <section className="space-y-4">
-            <h2 className="text-xl font-semibold text-gray-700"> Overall Placement Summary</h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-              {/* 📌 Total Jobs Posted */}
-              <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-gray-500">Total Jobs Posted</p>
-                    <p className="text-2xl font-bold text-gray-800">{summaryData.jobOpenings}</p>
-                  </div>
-                  <Briefcase className="text-blue-500" size={24} />
-                </div>
-              </div>
-
-              {/* 👩‍🎓 Total Registered Students */}
-              <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-gray-500">Total Registered Students</p>
-                    <p className="text-2xl font-bold text-gray-800">{summaryData.registeredStudents}</p>
-                  </div>
-                  <Users className="text-indigo-500" size={24} />
-                </div>
-              </div>
-
-              {/* 📝 Total Applications */}
-              <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-gray-500">Total Applications</p>
-                    <p className="text-2xl font-bold text-gray-800">{summaryData.totalApplications}</p>
-                  </div>
-                  <FileText className="text-purple-500" size={24} />
-                </div>
-              </div>
-
-              {/* 🟢 Students Placed */}
-              <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-gray-500">Students Placed</p>
-                    <p className="text-2xl font-bold text-green-600">{summaryData.placedStudents}</p>
-                  </div>
-                  <CheckCircle className="text-green-500" size={24} />
-                </div>
-              </div>
-
-              {/* ❌ Not Yet Placed */}
-              <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-gray-500">Not Yet Placed</p>
-                    <p className="text-2xl font-bold text-red-600">{summaryData.notPlacedStudents}</p>
-                  </div>
-                  <Clock className="text-red-500" size={24} />
-                </div>
-              </div>
-
-           
-
-              {/* 💰 CTC Statistics */}
-              <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-gray-500">CTC Statistics</p>
-                    <div className="text-xs text-gray-600 mt-1">
-                      <div>Highest: ₹{summaryData.highestCTC}L</div>
-                      <div>Average: ₹{summaryData.averageCTC}L</div>
-                      <div>Lowest: ₹{summaryData.lowestCTC}L</div>
-                      <div>Median: ₹{summaryData.medianCTC}L</div>
-                      <div>P90: ₹{summaryData.p90CTC}L</div>
-                    </div>
-                  </div>
-                  <TrendingUp className="text-teal-500" size={24} />
-                </div>
-              </div>
-
-              {/* 💼 Number of Companies Participated */}
-              <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-gray-500">Companies Participated</p>
-                    <p className="text-2xl font-bold text-blue-600">{summaryData.companiesParticipated}</p>
-                  </div>
-                  <Building className="text-blue-500" size={24} />
-                </div>
-              </div>
-
-              {/* 📊 Placement Rate */}
-              <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-gray-500">Placement Rate</p>
-                    <p className="text-2xl font-bold text-teal-600">{summaryData.placementPercentage}%</p>
-                  </div>
-                  <TrendingUp className="text-teal-500" size={24} />
-                </div>
-              </div>
-            </div>
-          </section>
-
-          {/* Company-wise Recruitment Status (overall) */}
-          <section className="bg-white p-6 rounded-lg shadow-sm border border-gray-200 mt-6">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-semibold">🎯 Company-wise Recruitment Status (Overall)</h3>
-              <button
-                onClick={handleExport}
-                disabled={!companyKPIs || companyKPIs.length === 0}
-                className={`flex items-center px-4 py-2 rounded-lg ${
-                  companyKPIs && companyKPIs.length > 0
-                    ? 'bg-blue-500 text-white hover:bg-blue-600'
-                    : 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                }`}
-                title={companyKPIs && companyKPIs.length > 0 ? 'Export data to CSV' : 'No data available to export'}
-              >
-                <Download size={16} className="mr-2" />
-                Export Data
-              </button>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Company</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Eligible</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Applied</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Not Applied</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Selected</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Rejected</th>
-                  </tr>
-                </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {companyKPIs && companyKPIs.map(kpi => (
-                    <tr key={kpi.company}>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{kpi.company}</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{kpi.eligible}</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{kpi.applied} ({kpi.appliedPct}%)</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{kpi.notApplied} ({kpi.notAppliedPct}%)</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{kpi.selected} ({kpi.selectedPct}%)</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{kpi.rejected} ({kpi.rejectedPct}%)</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
-
-          {/* Department Placement Trends & Average Package Analytics Side by Side */}
-          <div className="flex flex-col lg:flex-row gap-6 mb-8">
-            {/* Department Placement Trends Section (legend: department names) */}
-            <div className="bg-white p-6 rounded shadow flex-1 mb-6 lg:mb-0">
-              <h2 className="text-xl font-semibold mb-4">Department Placement Trends</h2>
-              <p className="text-gray-600 mb-4">Department-wise placement ratios over time (per batch/year).</p>
-              {deptPlacementLoading ? (
-                <div className="flex items-center justify-center h-72"><LoadingSpinner /></div>
-              ) : deptPlacementTrends.labels.length === 0 ? (
-                <div>No data available.</div>
-              ) : (
-                <div className="h-72">
-                  {/* Legend: department names */}
-                  <Bar
-                    options={{
-                      responsive: true,
-                      plugins: { legend: { position: 'top' }, title: { display: false } },
-                      scales: { y: { beginAtZero: true, max: 100, title: { display: true, text: 'Placement %' } } },
-                    }}
-                    data={{
-                      labels: deptPlacementTrends.labels,
-                      datasets: deptPlacementTrends.datasets.map((ds, i) => ({
-                        ...ds,
-                        backgroundColor: `rgba(${53 + i * 30}, ${162 + i * 10}, ${235 - i * 20}, 0.5)`
-                      }))
-                    }}
-                  />
-                </div>
-              )}
-            </div>
-            {/* Average Package Analytics Section (legend: company names) */}
-            <div className="bg-white p-6 rounded shadow flex-1">
-              <h2 className="text-xl font-semibold mb-4">Average Package Analytics</h2>
-              <p className="text-gray-600 mb-4">Average package offered by each company per year (batch).</p>
-                {avgPackageLoading ? (
-                <div className="flex items-center justify-center h-72"><LoadingSpinner /></div>
-              ) : avgPackageData.labels.length === 0 ? (
-                <div>No data available.</div>
-              ) : (
-                <div className="h-72">
-                  {/* Legend: company names */}
-                  <Bar
-                    options={{
-                      responsive: true,
-                        plugins: { legend: { position: 'top', labels: { filter: (item) => true } }, title: { display: false } },
-                        scales: {
-                          x: { title: { display: true, text: 'Batch' } },
-                          y: { beginAtZero: true, title: { display: true, text: 'Average Package (LPA)' } }
-                        },
-                    }}
-                    data={{
-                      labels: avgPackageData.labels,
-                      datasets: avgPackageData.datasets.map((ds, i) => ({
-                        ...ds,
-                        label: ds.label, // Ensure label is company name
-                        backgroundColor: `rgba(${153 + i * 20}, ${102 + i * 10}, ${255 - i * 15}, 0.5)`
-                      }))
-                    }}
-                  />
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Student Analytics */}
-          <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Branch/Department Distribution (Applicants vs. Selected) */}
-            <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
-              <h3 className="text-lg font-semibold mb-4">🏢 Branch/Department Distribution (Applicants vs. Selected)</h3>
-              <div className="h-64">
-                {demographicData.branch.labels.length > 0 ? (
-                  <Bar options={demographicBranchChartOptions} data={demographicData.branch} />
-                ) : (
-                  <p className="text-gray-500">No branch distribution data available.</p>
-                )}
-              </div>
-            </div>
-
-            {/* Top Recruiting Companies Chart */}
-            <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
-              <h3 className="text-lg font-semibold mb-4">💼 Top Recruiting Companies</h3>
-              <div className="h-64">
-                {companyData.labels.length > 0 ? (
-                  <Bar
-                    options={{
-                      responsive: true,
-                      plugins: { legend: { position: 'top' }, title: { display: false } },
-                      scales: {
-                        x: {
-                          stacked: true,
-                          title: { display: true, text: 'Company' },
-                        },
-                        y: {
-                          stacked: true,
-                          beginAtZero: true,
-                          title: { display: true, text: 'Students Recruited' },
-                        },
-                      },
-                    }}
-                    data={{
-                      labels: companyData.labels,
-                      datasets: [{
-                        label: 'Students Recruited',
-                        data: companyData.datasets[0].data, // Assuming the first dataset is the one we want
-                        backgroundColor: 'rgba(54, 162, 235, 0.7)',
-                      }],
-                    }}
-                  />
-                ) : (
-                  <p className="text-gray-500">No company data available.</p>
-                )}
-              </div>
-            </div>
-          </section>
-
-          {/* CTC Distribution */}
-          <section className="bg-white p-6 rounded-lg shadow-sm border border-gray-200 mt-6">
-            <h3 className="text-lg font-semibold mb-4">💰 CTC Distribution (LPA)</h3>
-            <div className="h-64">
-              {ctcDistribution.labels.length > 0 ? (
-                <Bar
-                  options={{
-                    responsive: true,
-                    plugins: { legend: { position: 'top' }, title: { display: false } },
-                    scales: {
-                      x: { title: { display: true, text: 'LPA Range' } },
-                      y: { beginAtZero: true, title: { display: true, text: 'Students' } },
-                    },
-                  }}
-                  data={ctcDistribution}
-                />
-              ) : (
-                <p className="text-gray-500">No CTC distribution data available.</p>
-              )}
-            </div>
-          </section>
-        </section>
+        // Render full analytics dashboard (no filters)
+        <AnalyticsCharts
+          summaryData={summaryData}
+          branchData={branchData}
+          companyData={companyData}
+          funnelData={funnelData}
+          ctcDistribution={ctcDistribution}
+          eligibilityData={eligibilityData}
+          loading={analyticsLoading}
+          onEligibleClick={() => setShowEligibleList(true)}
+          onNotEligibleClick={() => setShowNotEligibleList(true)}
+        />
       )}
 
       {/* Views modal/dropdown */}
@@ -1226,8 +1297,22 @@ const Analytics = () => {
           </div>
         </div>
       )}
-
     </div>
+  );
+};
+
+// Small internal component for report buttons
+const ReportButton = ({ label, onClick, disabledReason }) => {
+  const disabled = !!disabledReason;
+  return (
+    <button
+      className={`w-full text-left px-3 py-2 rounded border transition ${disabled ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-white hover:bg-gray-100 dark:bg-gray-800 dark:hover:bg-gray-700'}`}
+      onClick={() => !disabled && onClick()}
+      title={disabled ? disabledReason : `Download ${label}`}
+      disabled={disabled}
+    >
+      {label}
+    </button>
   );
 };
 

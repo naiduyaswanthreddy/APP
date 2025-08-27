@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useContext } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { 
   Bell, 
@@ -10,14 +10,18 @@ import {
   Image, 
   Calendar,
   LogOut,
-  X
+  X,
+  Sun,
+  Moon
 } from 'lucide-react';
+import { ThemeContext } from '../../context/ThemeContext';
 
-const MobileSidebar = ({ isOpen, onClose, userData, unreadCount }) => {
+const MobileSidebar = ({ isOpen, onClose, userData, unreadCount, onLogout }) => {
   const location = useLocation();
+  const { isDarkMode, toggleTheme } = useContext(ThemeContext);
 
   const menuItems = [
-    { name: "Notifications", path: "/student/notifications", icon: Bell },
+    // Notifications removed from sidebar per requirement
     { name: "Resources", path: "/student/resources", icon: BookOpen },
     { name: "Job Posting", path: "/student/jobpost", icon: Briefcase },
     { name: "Applications", path: "/student/applications", icon: FileText },
@@ -33,14 +37,14 @@ const MobileSidebar = ({ isOpen, onClose, userData, unreadCount }) => {
     <>
       {/* Backdrop */}
       <div 
-        className="fixed inset-0 bg-black bg-opacity-50 z-[70] md:hidden"
+        className="fixed inset-0 bg-black bg-opacity-50 z-[1090] md:hidden"
         onClick={onClose}
         aria-hidden="true"
       />
       
       {/* Sidebar */}
-      <div className="fixed inset-y-0 left-0 w-64 bg-gradient-to-b from-indigo-900 to-teal-600 flex flex-col z-[80] md:hidden">
-        <div className="flex-1 overflow-y-auto">
+      <div className="fixed inset-y-0 left-0 w-64 bg-gradient-to-b from-indigo-900 to-teal-600 flex flex-col z-[1110] md:hidden">
+        <div className="flex-1 overflow-y-auto custom-scrollbar">
           {/* Header */}
           <div className="p-4 flex justify-between items-center">
             <div className="text-white">
@@ -77,36 +81,53 @@ const MobileSidebar = ({ isOpen, onClose, userData, unreadCount }) => {
                     ? 'bg-white/20 text-white' 
                     : 'hover:bg-white/10 text-gray-300'}`}
               >
-                {item.icon === Bell ? (
-                  <div className="relative">
-                    <Bell size={20} />
-                    {unreadCount > 0 && (
-                      <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs w-4 h-4 flex items-center justify-center rounded-full">
-                        {unreadCount > 9 ? '9+' : unreadCount}
-                      </span>
-                    )}
-                  </div>
-                ) : (
-                  <item.icon size={20} />
-                )}
+                <item.icon size={20} />
                 <span>{item.name}</span>
               </Link>
             ))}
           </nav>
         </div>
 
-        {/* Logout Button */}
-        <div className="p-4">
-          <button 
-            onClick={() => {
-              // Handle logout
-              onClose();
-            }}
-            className="w-full text-left px-4 py-3 rounded-lg text-gray-300 hover:bg-white/10 flex items-center gap-3"
-          >
-            <LogOut size={20} />
-            <span>Log Out</span>
-          </button>
+        {/* Bottom Controls: Theme, Notifications & Logout (icon-only) */}
+        <div className="p-4 border-t border-white/10">
+          <div className="flex items-center justify-start gap-4">
+            <button
+              onClick={toggleTheme}
+              className="p-2 rounded-full text-white hover:bg-white/10"
+              aria-label={isDarkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+              title={isDarkMode ? 'Light mode' : 'Dark mode'}
+            >
+              {isDarkMode ? <Sun size={22} /> : <Moon size={22} />}
+            </button>
+            <button
+              onClick={() => {
+                // navigate to notifications
+                window.location.href = '#/student/notifications';
+                onClose();
+              }}
+              className="relative p-2 rounded-full text-white hover:bg-white/10"
+              aria-label="Notifications"
+              title="Notifications"
+            >
+              <Bell size={22} />
+              {unreadCount > 0 && (
+                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] w-4 h-4 flex items-center justify-center rounded-full">
+                  {unreadCount > 9 ? '9+' : unreadCount}
+                </span>
+              )}
+            </button>
+            <button
+              onClick={() => {
+                if (onLogout) onLogout();
+                onClose();
+              }}
+              className="p-2 rounded-full text-white hover:bg-white/10"
+              aria-label="Log out"
+              title="Log out"
+            >
+              <LogOut size={22} />
+            </button>
+          </div>
         </div>
       </div>
     </>

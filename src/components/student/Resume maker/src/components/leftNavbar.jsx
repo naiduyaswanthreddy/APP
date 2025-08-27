@@ -48,8 +48,18 @@ export default function LeftNavbar({ onMenuClick, onEdit, onDelete }) {
   };
 
   const clearCache = () => {
-    localStorage.clear();
-    window.location.reload();
+    // Clear resume-specific data only, preserve auth data
+    const keysToKeep = ['userRole', 'companyId', 'authToken'];
+    const allKeys = Object.keys(localStorage);
+    allKeys.forEach(key => {
+      if (!keysToKeep.includes(key)) {
+        localStorage.removeItem(key);
+      }
+    });
+    // Reset component state instead of full reload
+    setEditDeleteVisible({});
+    setMenuItems(['About Me', 'Experience', 'Education', 'Skills', 'Projects', 'Certifications']);
+    window.location.reload(); // Temporary - will be replaced with proper state reset
   };
 
   const getResumeData = () => {

@@ -6,66 +6,67 @@ import {
   Users, 
   Briefcase, 
   Building, 
-  Calendar, 
-  Bell, 
-  TrendingUp, 
-  Mail,
   Eye,
-  EyeOff
+  EyeOff,
+  UserX,
+  AlertTriangle
 } from 'lucide-react';
 import PushNotificationManager from './PushNotificationManager';
 import EmailManager from './EmailManager';
+import BulkFreezeModal from './BulkFreezeModal';
+import FrozenStudents from './FrozenStudents';
 import LoadingSpinner from '../ui/LoadingSpinner';
 
 const Dashboard = () => {
   const [loading, setLoading] = useState(true);
   const [showPushManager, setShowPushManager] = useState(false);
   const [showEmailManager, setShowEmailManager] = useState(false);
+  const [showBulkFreezeModal, setShowBulkFreezeModal] = useState(false);
+  const [showFrozenStudents, setShowFrozenStudents] = useState(false);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [stats, setStats] = useState({
     totalStudents: 0,
     activeJobs: 0,
     totalCompanies: 0,
-    totalEvents: 0,
+    frozenStudents: 0,
   });
-  const [recentActivity, setRecentActivity] = useState([
-    { message: 'New student registered: John Doe', timestamp: '2 hours ago' },
-    { message: 'New job posting: Software Engineer at Tech Corp', timestamp: '3 hours ago' },
-    { message: 'New company added: ABC Solutions', timestamp: '4 hours ago' },
-  ]);
+  
+
+  const fetchStats = async () => {
+    try {
+      // Fix: count students from 'students' collection
+      const studentsRef = collection(db, 'students');
+      const snapshot = await getDocs(studentsRef);
+      setStats(prev => ({ ...prev, totalStudents: snapshot.size }));
+
+      const jobsRef = collection(db, 'jobs');
+      const qJobs = query(jobsRef, where('status', '==', 'active'));
+      const snapshotJobs = await getDocs(qJobs);
+      setStats(prev => ({ ...prev, activeJobs: snapshotJobs.size }));
+
+      const companiesRef = collection(db, 'companies');
+      const snapshotCompanies = await getDocs(companiesRef);
+      setStats(prev => ({ ...prev, totalCompanies: snapshotCompanies.size }));
+
+      // Fetch frozen students count
+      const frozenStudentsRef = collection(db, 'students');
+      const qFrozen = query(frozenStudentsRef, where('freezed.active', '==', true));
+      const snapshotFrozen = await getDocs(qFrozen);
+      setStats(prev => ({ ...prev, frozenStudents: snapshotFrozen.size }));
+
+    } catch (error) {
+      toast.error('Failed to fetch dashboard statistics');
+      console.error(error);
+    }
+  };
 
   useEffect(() => {
-    const fetchStats = async () => {
-      try {
-        const studentsRef = collection(db, 'users');
-        const q = query(studentsRef, where('role', '==', 'student'));
-        const snapshot = await getDocs(q);
-        setStats(prev => ({ ...prev, totalStudents: snapshot.size }));
-
-        const jobsRef = collection(db, 'jobs');
-        const qJobs = query(jobsRef, where('status', '==', 'active'));
-        const snapshotJobs = await getDocs(qJobs);
-        setStats(prev => ({ ...prev, activeJobs: snapshotJobs.size }));
-
-        const companiesRef = collection(db, 'companies');
-        const snapshotCompanies = await getDocs(companiesRef);
-        setStats(prev => ({ ...prev, totalCompanies: snapshotCompanies.size }));
-
-        const eventsRef = collection(db, 'events');
-        const snapshotEvents = await getDocs(eventsRef);
-        setStats(prev => ({ ...prev, totalEvents: snapshotEvents.size }));
-
-      } catch (error) {
-        toast.error('Failed to fetch dashboard statistics');
-        console.error(error);
-      }
-    };
-
     const timer = setTimeout(() => {
       setLoading(false);
     }, 1000);
-    fetchStats(); // Call fetchStats here
+    fetchStats();
     return () => clearTimeout(timer);
-  }, []);
+  }, [refreshTrigger]);
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
@@ -114,12 +115,12 @@ const Dashboard = () => {
 
         <div className="bg-white p-6 rounded-lg shadow-sm border">
           <div className="flex items-center">
-            <div className="p-2 bg-yellow-100 rounded-lg">
-              <Calendar className="h-6 w-6 text-yellow-600" />
+            <div className="p-2 bg-red-100 rounded-lg">
+              <UserX className="h-6 w-6 text-red-600" />
             </div>
             <div className="ml-4">
-              <p className="text-sm font-medium text-gray-600">Events</p>
-              <p className="text-2xl font-semibold text-gray-900">{stats.totalEvents}</p>
+              <p className="text-sm font-medium text-gray-600">Frozen Students</p>
+              <p className="text-2xl font-semibold text-gray-900">{stats.frozenStudents}</p>
             </div>
           </div>
         </div>
@@ -157,23 +158,52 @@ const Dashboard = () => {
         {showEmailManager && <EmailManager />}
       </div>
 
-      {/* Recent Activity */}
-      <div className="bg-white rounded-lg shadow-sm border p-6">
-        <h2 className="text-lg font-medium text-gray-900 mb-4">Recent Activity</h2>
-        <div className="space-y-4">
-          {recentActivity.map((activity, index) => (
-            <div key={index} className="flex items-center space-x-3 p-3 bg-gray-50 rounded-lg">
-              <div className="p-2 bg-blue-100 rounded-lg">
-                <Bell className="h-4 w-4 text-blue-600" />
-              </div>
-              <div className="flex-1">
-                <p className="text-sm font-medium text-gray-900">{activity.message}</p>
-                <p className="text-xs text-gray-500">{activity.timestamp}</p>
-              </div>
-            </div>
-          ))}
+      {/* Student Management Section */}
+      <div className="bg-white rounded-lg shadow-sm border p-6 mb-8">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-medium text-gray-900">Student Management</h2>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setShowFrozenStudents(true)}
+              className="flex items-center px-3 py-2 bg-orange-600 text-white rounded-md hover:bg-orange-700 text-sm"
+            >
+              <AlertTriangle size={16} className="mr-2" />
+              View Frozen Students ({stats.frozenStudents})
+            </button>
+            <button
+              onClick={() => setShowBulkFreezeModal(true)}
+              className="flex items-center px-3 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 text-sm"
+            >
+              <UserX size={16} className="mr-2" />
+              Bulk Freeze/Unfreeze
+            </button>
+          </div>
         </div>
+        <p className="text-gray-600 text-sm">
+          Manage student account status in bulk. Freeze accounts to prevent job applications or unfreeze to restore access.
+        </p>
       </div>
+
+      {/* Removed Data Migration and Recent Activity sections as requested */}
+
+      {/* Bulk Freeze Modal */}
+      <BulkFreezeModal 
+        isOpen={showBulkFreezeModal} 
+        onClose={() => {
+          setShowBulkFreezeModal(false);
+          // Refresh stats after bulk operations
+          setRefreshTrigger(prev => prev + 1);
+        }} 
+      />
+      {/* Frozen Students */}
+      <FrozenStudents 
+        isOpen={showFrozenStudents} 
+        onClose={() => {
+          setShowFrozenStudents(false);
+          // Refresh stats after unfreeze operations
+          setRefreshTrigger(prev => prev + 1);
+        }} 
+      />
     </div>
   );
 };

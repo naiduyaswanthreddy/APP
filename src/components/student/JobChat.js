@@ -11,6 +11,7 @@ const JobChat = ({ selectedJob, onClose }) => {
   const [newMessage, setNewMessage] = useState('');
   const [loading, setLoading] = useState(true);
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+  const [isSending, setIsSending] = useState(false);
   const messagesEndRef = useRef(null);
   const unsubscribeRef = useRef(null);
 
@@ -149,11 +150,13 @@ const JobChat = ({ selectedJob, onClose }) => {
   
   // Function to send a new message
   const sendMessage = async () => {
-    if (!newMessage.trim() || !selectedJob || !auth.currentUser) return;
+    if (!newMessage.trim() || !selectedJob || !auth.currentUser || isSending) return;
 
+    setIsSending(true);
     try {
+      const messageText = newMessage.trim();
       const messageData = {
-        message: newMessage.trim(),
+        message: messageText,
         senderId: auth.currentUser.uid,
         senderName: auth.currentUser.displayName || 'Student',
         senderRole: 'student',
@@ -187,7 +190,7 @@ const JobChat = ({ selectedJob, onClose }) => {
                 recipientId,
                 selectedJob,
                 auth.currentUser.displayName || "Student",
-                newMessage.trim()
+                messageText
               );
             } catch (error) {
               console.error('Error sending chat notification:', error);
@@ -200,6 +203,8 @@ const JobChat = ({ selectedJob, onClose }) => {
     } catch (error) {
       console.error("Error sending message:", error);
       toast.error("Failed to send message");
+    } finally {
+      setIsSending(false);
     }
   };
 
@@ -302,14 +307,16 @@ const JobChat = ({ selectedJob, onClose }) => {
               value={newMessage}
               onChange={(e) => setNewMessage(e.target.value)}
               placeholder="Type your message..."
-              className="flex-1 p-2 border rounded-l-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-              onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
+              className="flex-1 p-2 border rounded-l-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
+              onKeyDown={(e) => { if (e.key === 'Enter' && !isSending) { e.preventDefault(); sendMessage(); } }}
+              disabled={isSending}
             />
             <button
               onClick={sendMessage}
-              className="bg-blue-600 text-white p-2 rounded-r-lg hover:bg-blue-700"
+              className={`bg-blue-600 text-white p-2 rounded-r-lg ${isSending ? 'opacity-60 cursor-not-allowed' : 'hover:bg-blue-700'}`}
+              disabled={isSending || !newMessage.trim()}
             >
-              <Send size={20} />
+              {isSending ? <LoadingSpinner size="small" /> : <Send size={20} />}
             </button>
           </div>
         </div>

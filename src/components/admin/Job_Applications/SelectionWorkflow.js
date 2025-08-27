@@ -73,7 +73,7 @@ const EnhancedSelectionWorkflow = ({ application, job, onStatusUpdate }) => {
       companyName: job.company,
       position: job.position,
       offerDetails: {
-        package: selectionData.package || job.salary,
+        package: selectionData.package || job.ctc || job.maxCtc || job.salary || job.maxSalary || '',
         joiningDate: selectionData.joiningDate,
         location: selectionData.location || job.location,
         offerLetter: selectionData.offerLetter,
@@ -91,7 +91,7 @@ const EnhancedSelectionWorkflow = ({ application, job, onStatusUpdate }) => {
     await updateDoc(studentRef, {
       placementStatus: "placed",
       placedCompany: job.company,
-      placedPackage: acceptanceData.package || job.salary,
+      placedPackage: acceptanceData.package || job.ctc || job.maxCtc || job.salary || job.maxSalary || '',
       placedJobTitle: job.position,
       placedLocation: acceptanceData.location || job.location,
       placedAt: new Date(),
@@ -129,7 +129,7 @@ const EnhancedSelectionWorkflow = ({ application, job, onStatusUpdate }) => {
       await updateDoc(statsDoc.ref, {
         totalPlaced: (statsDoc.data().totalPlaced || 0) + 1,
         totalOffers: (statsDoc.data().totalOffers || 0) + 1,
-        averagePackage: calculateAveragePackage(statsDoc.data(), acceptanceData.package || job.salary),
+        averagePackage: calculateAveragePackage(statsDoc.data(), acceptanceData.package || job.ctc || job.maxCtc || job.salary || job.maxSalary || ''),
         updatedAt: new Date()
       });
     } else {
@@ -137,7 +137,7 @@ const EnhancedSelectionWorkflow = ({ application, job, onStatusUpdate }) => {
         year: currentYear,
         totalPlaced: 1,
         totalOffers: 1,
-        averagePackage: acceptanceData.package || job.salary,
+        averagePackage: acceptanceData.package || job.ctc || job.maxCtc || job.salary || job.maxSalary || '',
         createdAt: new Date()
       });
     }
@@ -180,7 +180,7 @@ const EnhancedSelectionWorkflow = ({ application, job, onStatusUpdate }) => {
         studentId: application.student_id,
         jobId: job.id,
         companyName: job.company,
-        package: acceptanceData.package || job.salary,
+        package: acceptanceData.package || job.ctc || job.maxCtc || job.salary || job.maxSalary || '',
         position: job.position,
         location: acceptanceData.location || job.location,
         joiningDate: acceptanceData.joiningDate,

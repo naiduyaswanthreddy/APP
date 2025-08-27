@@ -1,6 +1,18 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { collection, query, where, getDocs, doc, getDoc, deleteDoc, updateDoc, writeBatch, orderBy } from 'firebase/firestore';
+import {
+  collection,
+  query,
+  where,
+  getDocs,
+  getDoc,
+  doc,
+  deleteDoc,
+  updateDoc,
+  writeBatch,
+  serverTimestamp,
+  documentId
+} from "firebase/firestore";
 import { db } from '../../../firebase';
 import { ToastContainer, toast } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -10,7 +22,14 @@ import JobDetailsEdit from './JobDetailsEdit';
 import StudentDetailsModal from './StudentDetailsModal';
 import JobLogs from './JobLogs';
 import PageLoader from '../../ui/PageLoader';
+import RoundProgressBar from './RoundProgressBar';
+import RoundActionPanel from './RoundActionPanel';
 import { createStatusUpdateNotification, createInterviewNotification, createSystemAlertNotification, sendSelectionNotification } from '../../../utils/notificationHelpers';
+import { notifyApplicationStatusUpdate, notifyInterviewScheduled, notifyBulkStatusUpdate, notifyStudentSelection } from '../../../utils/adminNotificationHelpers';
+import { logJobActivity } from '../../../utils/activityLogger';
+
+// Dev flag to gate debug logs
+const __DEV__ = process.env.NODE_ENV !== 'production';
 
 const JobApplications = () => {
   const { jobId } = useParams();
@@ -40,18 +59,24 @@ const JobApplications = () => {
   const [filters, setFilters] = useState({
     eligibility: 'all',
     department: 'all',
-    cgpa: '',
+    gender: 'all',
+    cgpaMin: '',
+    currentArrearsMax: '',
+    historyArrearsMax: '',
     searchTerm: '',
     roundStatus: 'all',
   });
   const roundStatusConfig = {
     pending: { label: '⏳ Pending', class: 'bg-gray-100 text-gray-800', icon: '⏳' },
     shortlisted: { label: '✅ Shortlisted', class: 'bg-green-100 text-green-800', icon: '✅' },
-    rejected: { label: '⚠️ Rejected', class: 'bg-red-100 text-red-800', icon: '⚠️' }
+    waitlisted: { label: '🟡 Waitlisted', class: 'bg-yellow-100 text-yellow-800', icon: '🟡' },
+    rejected: { label: '⚠️ Rejected', class: 'bg-red-100 text-red-800', icon: '⚠️' },
+    selected: { label: '🌟 Selected', class: 'bg-purple-100 text-purple-800', icon: '🌟' },
+    placed: { label: '🎉 Placed', class: 'bg-blue-100 text-blue-800', icon: '🎉' }
   };
   // Pagination states
   const [currentPage, setCurrentPage] = useState(1);
-  const applicationsPerPage = 20;
+  const [applicationsPerPage, setApplicationsPerPage] = useState(25);
   // Round management states
   const [currentRoundIndex, setCurrentRoundIndex] = useState(0);
   const [editingRounds, setEditingRounds] = useState(false);
@@ -64,7 +89,7 @@ const JobApplications = () => {
   // Column management
   const [visibleColumns, setVisibleColumns] = useState([
     'name', 'rollNumber', 'department', 'cgpa', 'email', 'phone', 'currentArrears', 'historyArrears',
-    'skills', 'tenthPercentage', 'twelfthPercentage', 'diplomaPercentage', 'gender', 'roundStatus', 'resume', 'predict',
+    'skills', /* hide by default: 'tenthPercentage', 'twelfthPercentage', 'diplomaPercentage' */ 'gender', 'roundStatus', 'resume', 'predict',
     'question1', 'question2', 'feedback', 'rounds'
   ]);
   const allPossibleColumns = [
@@ -72,21 +97,108 @@ const JobApplications = () => {
     'skills', 'match', 'roundStatus', 'resume', 'predict', 'question1', 'question2', 'feedback',
     'tenthPercentage', 'twelfthPercentage', 'diplomaPercentage', 'gender', 'rounds' // Add more from student data
   ];
+  // Fixed display order for columns in UI and table rendering
+  const modalColumnOrder = [
+    'name',
+    'rollNumber',
+    'department',
+    'cgpa',
+    'email',
+    'phone',
+    'currentArrears',
+    'historyArrears',
+    'skills',
+    'tenthPercentage',
+    'twelfthPercentage',
+    'diplomaPercentage',
+    'gender',
+    'resume',
+    'predict',
+    'feedback',
+    'roundStatus',
+    'rounds'
+  ];
+  const orderedModalColumns = useMemo(() => {
+    const set = new Set();
+    const ordered = [];
+    // 1) known columns in fixed order
+    modalColumnOrder.forEach(k => {
+      if (allPossibleColumns.includes(k)) { ordered.push(k); set.add(k); }
+    });
+    // 2) question columns q1..qN at the end in numeric order
+    const qCols = allPossibleColumns.filter(c => /^q\d+$/i.test(c));
+    qCols.sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
+    qCols.forEach(c => { if (!set.has(c)) { ordered.push(c); set.add(c); } });
+    // 3) any remaining
+    const remaining = allPossibleColumns.filter(c => !set.has(c));
+    remaining.sort();
+    remaining.forEach(c => ordered.push(c));
+    return ordered;
+  }, [allPossibleColumns, job?.screeningQuestions]);
   // Column selector modal state
   const [showColumnModal, setShowColumnModal] = useState(false);
+  // Table settings: page size input shown in the Customize Columns modal
+  const [pageSizeInput, setPageSizeInput] = useState(25);
   // Add state for dynamic question filters
   const [questionFilters, setQuestionFilters] = useState({});
+  
+  // Enhanced round management states
+  const [applicantCounts, setApplicantCounts] = useState({});
+  const [isRoundActionLoading, setIsRoundActionLoading] = useState(false);
+
+  // Helper: resolve an existing round key in student's rounds to avoid creating new keys due to label variations
+  const resolveExistingRoundKey = useCallback((desiredName, roundsMap) => {
+    if (!desiredName || !roundsMap) return null;
+    
+    // First, try exact match (case-insensitive)
+    const exactMatch = Object.keys(roundsMap).find(key => 
+      key.toLowerCase().trim() === desiredName.toLowerCase().trim()
+    );
+    if (exactMatch) return exactMatch;
+    
+    // Second, try normalized exact match (remove extra spaces, normalize common variations)
+    const norm = (s) => String(s || '')
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/shortlisting/g, 'shortlist')
+      .replace(/interview round/g, 'interview');
+    
+    const targetNorm = norm(desiredName);
+    const normalizedMatch = Object.keys(roundsMap).find(key => 
+      norm(key) === targetNorm
+    );
+    if (normalizedMatch) return normalizedMatch;
+    
+    // If no match found, return null to prevent creating new rounds
+    // This ensures only existing rounds are updated
+    return null;
+  }, []);
   // Define fetchJobAndApplications before using it in useEffect
+  const __DEV__ = process.env.NODE_ENV !== 'production';
+  const isFetchingRef = useRef(false);
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => { isMountedRef.current = false; };
+  }, []);
+
   const fetchJobAndApplications = useCallback(async () => {
+    if (isFetchingRef.current) {
+      __DEV__ && console.log('Fetch skipped: already in progress');
+      return;
+    }
+    isFetchingRef.current = true;
     setLoading(true);
-    console.log('Fetching job and applications for jobId:', jobId);
+    __DEV__ && console.log('Fetching job and applications for jobId:', jobId);
     try {
       const jobRef = doc(db, "jobs", jobId);
       const jobSnap = await getDoc(jobRef);
       
-      console.log('Job snapshot exists:', jobSnap.exists());
+      __DEV__ && console.log('Job snapshot exists:', jobSnap.exists());
       if (jobSnap.exists()) {
-        console.log('Job data:', jobSnap.data());
+        __DEV__ && console.log('Job data:', jobSnap.data());
         // Add date validation helper function
         const validateDate = (dateValue) => {
           if (!dateValue) return null;
@@ -106,7 +218,19 @@ const JobApplications = () => {
           position: jobSnap.data().position || '',
           description: jobSnap.data().description || jobSnap.data().jobDescription || '',
           location: jobSnap.data().location || jobSnap.data().jobLocation || '',
-          salary: jobSnap.data().salary || jobSnap.data().salaryStipend || '',
+          // Complete salary/compensation data
+          salary: jobSnap.data().salary || '',
+          minSalary: jobSnap.data().minSalary || '',
+          maxSalary: jobSnap.data().maxSalary || '',
+          ctc: jobSnap.data().ctc || '',
+          minCtc: jobSnap.data().minCtc || '',
+          maxCtc: jobSnap.data().maxCtc || '',
+          basePay: jobSnap.data().basePay || '',
+          variablePay: jobSnap.data().variablePay || '',
+          bonuses: jobSnap.data().bonuses || '',
+          compensationType: jobSnap.data().compensationType || '',
+          ctcUnit: jobSnap.data().ctcUnit || '',
+          salaryUnit: jobSnap.data().salaryUnit || '',
           // Validate dates before assigning
           deadline: validateDate(jobSnap.data().deadline || jobSnap.data().applicationDeadline),
           interviewDateTime: validateDate(jobSnap.data().interviewDateTime || jobSnap.data().interviewDate),
@@ -136,6 +260,12 @@ const JobApplications = () => {
         setJob(jobData);
         setEditedJob(jobData); // This will ensure all fields are available in the edit modal
         setCurrentRoundIndex(jobData.currentRoundIndex);
+        
+        // Initialize currentRound based on currentRoundIndex
+        const initialRoundName = Array.isArray(jobData.rounds) && jobData.rounds[jobData.currentRoundIndex || 0]
+          ? (jobData.rounds[jobData.currentRoundIndex || 0]?.name || jobData.rounds[jobData.currentRoundIndex || 0]?.roundName || `Round ${(jobData.currentRoundIndex || 0) + 1}`)
+          : '';
+        setCurrentRound(initialRoundName);
         // Fetch applications for this job
         const applicationsRef = collection(db, "applications");
         // Try both field names to ensure we find applications
@@ -145,8 +275,8 @@ const JobApplications = () => {
         const querySnapshot1 = await getDocs(q1);
         const querySnapshot2 = await getDocs(q2);
         
-        console.log('Query 1 results (jobId):', querySnapshot1.size, querySnapshot1.docs.map(doc => ({ id: doc.id, data: doc.data() })));
-        console.log('Query 2 results (job_id):', querySnapshot2.size, querySnapshot2.docs.map(doc => ({ id: doc.id, data: doc.data() })));
+        __DEV__ && console.log('Query 1 results (jobId):', querySnapshot1.size);
+        __DEV__ && console.log('Query 2 results (job_id):', querySnapshot2.size);
      
         // Combine results from both queries
         const combinedDocs = [...querySnapshot1.docs, ...querySnapshot2.docs];
@@ -155,34 +285,45 @@ const JobApplications = () => {
           index === self.findIndex((d) => d.id === doc.id)
         );
         
-        console.log('Combined unique docs:', uniqueDocs.length);
-     
-        // Fetch all applications for this job and their student data
-        const applicationsData = await Promise.all(uniqueDocs.map(async (appDoc) => {
-          const appData = { id: appDoc.id, ...appDoc.data() };
-          
-          console.log('Raw application data:', appData);
-          console.log('Available fields in appData:', Object.keys(appData));
-          console.log('Student object in appData:', appData.student);
-          console.log('StudentData object in appData:', appData.studentData);
-          console.log('Screening answers in appData:', appData.screening_answers);
-          console.log('All fields containing "screening" or "answer":', Object.keys(appData).filter(key => key.toLowerCase().includes('screening') || key.toLowerCase().includes('answer')));
-          
-          // Create a basic student object from application data or use defaults
-          // First, check if there's already a student object in the application data
+        __DEV__ && console.log('Combined unique docs:', uniqueDocs.length);
+
+        // Build base applications quickly without extra per-doc reads
+        const baseApplications = uniqueDocs.map((appDoc) => ({ id: appDoc.id, ...appDoc.data() }));
+
+        // Collect unique student IDs for batch fetch
+        const uniqueStudentIds = Array.from(new Set(
+          baseApplications
+            .map(a => a.student_id || a.studentId || (a.student || a.studentData || {}).id)
+            .filter(Boolean)
+        ));
+
+        // Helper to chunk arrays (Firestore 'in' max 10)
+        const chunkArray = (arr, size = 10) => {
+          const chunks = [];
+          for (let i = 0; i < arr.length; i += size) chunks.push(arr.slice(i, i + size));
+          return chunks;
+        };
+
+        // Batch fetch students by ID
+        const studentsRef = collection(db, 'students');
+        const studentChunks = chunkArray(uniqueStudentIds, 10);
+        const studentDocs = [];
+        for (const ids of studentChunks) {
+          const qs = query(studentsRef, where(documentId(), 'in', ids));
+          const snap = await getDocs(qs);
+          studentDocs.push(...snap.docs);
+        }
+        const studentMap = new Map(studentDocs.map(d => [d.id, d.data()]));
+
+        // Merge student data and fallback to existing embedded data
+        const applicationsData = baseApplications.map(appData => {
           const existingStudent = appData.student || appData.studentData || {};
-          
-          // Try to find student data in various possible locations
+          const candidateId = appData.student_id || appData.studentId || existingStudent.id;
+          const fetchedStudent = candidateId ? studentMap.get(candidateId) : null;
+
           const findStudentField = (fieldName, alternatives = []) => {
-            // Check in existing student object first
             if (existingStudent[fieldName]) return existingStudent[fieldName];
-            
-            // Check in appData with various naming patterns
-            for (const alt of alternatives) {
-              if (appData[alt]) return appData[alt];
-            }
-            
-            // Check for common variations
+            for (const alt of alternatives) { if (appData[alt]) return appData[alt]; }
             const variations = [
               fieldName,
               `student_${fieldName}`,
@@ -190,138 +331,92 @@ const JobApplications = () => {
               fieldName.toLowerCase(),
               fieldName.toUpperCase()
             ];
-            
-            for (const variation of variations) {
-              if (appData[variation]) return appData[variation];
-            }
-            
+            for (const variation of variations) { if (appData[variation]) return appData[variation]; }
             return null;
           };
-          
-          appData.student = {
-            id: appData.student_id || appData.studentId || existingStudent.id || 'unknown',
-            name: findStudentField('name', ['studentName', 'fullName', 'student_name']) || 'N/A',
-            rollNumber: findStudentField('rollNumber', ['roll', 'studentRollNumber', 'student_rollNumber']) || 'N/A',
-            department: findStudentField('department', ['dept', 'studentDepartment', 'student_department']) || 'N/A',
-            cgpa: findStudentField('cgpa', ['gpa', 'studentCgpa', 'student_cgpa']) || '0',
-            email: findStudentField('email', ['studentEmail', 'student_email']) || 'N/A',
-            phone: findStudentField('phone', ['mobile', 'contact', 'studentPhone', 'student_phone']) || 'N/A',
-            currentArrears: findStudentField('currentArrears', ['arrears', 'current_arrears', 'studentCurrentArrears']) || '0',
-            historyArrears: findStudentField('historyArrears', ['history_arrears', 'studentHistoryArrears']) || '0',
-            skills: (() => {
-              const skillsData = findStudentField('skills', ['studentSkills', 'student_skills']);
-              return Array.isArray(skillsData) ? skillsData : [];
-            })(),
-            tenthPercentage: findStudentField('tenthPercentage', ['tenth', '10th', 'studentTenthPercentage']) || 'N/A',
-            twelfthPercentage: findStudentField('twelfthPercentage', ['twelfth', '12th', 'studentTwelfthPercentage']) || 'N/A',
-            diplomaPercentage: findStudentField('diplomaPercentage', ['diploma', 'studentDiplomaPercentage']) || 'N/A',
-            gender: findStudentField('gender', ['sex', 'studentGender']) || 'N/A',
-            rounds: existingStudent.rounds || appData.student_rounds || appData.rounds || {}
+
+          const mergedStudent = {
+            id: candidateId || 'unknown',
+            name: (fetchedStudent?.name) || findStudentField('name', ['studentName','fullName','student_name']) || 'N/A',
+            rollNumber: (fetchedStudent?.rollNumber) || findStudentField('rollNumber', ['roll','studentRollNumber','student_rollNumber']) || 'N/A',
+            department: (fetchedStudent?.department) || findStudentField('department', ['dept','studentDepartment','student_department']) || 'N/A',
+            cgpa: (fetchedStudent?.cgpa) || findStudentField('cgpa', ['gpa','studentCgpa','student_cgpa']) || '0',
+            email: (fetchedStudent?.email) || findStudentField('email', ['studentEmail','student_email']) || 'N/A',
+            phone: (fetchedStudent?.phone) || findStudentField('phone', ['mobile','contact','studentPhone','student_phone']) || 'N/A',
+            currentArrears: (fetchedStudent?.currentArrears) || findStudentField('currentArrears', ['arrears','current_arrears','studentCurrentArrears']) || '0',
+            historyArrears: (fetchedStudent?.historyArrears) || findStudentField('historyArrears', ['history_arrears','studentHistoryArrears']) || '0',
+            skills: Array.isArray(fetchedStudent?.skills) ? fetchedStudent.skills : (Array.isArray(existingStudent.skills) ? existingStudent.skills : []),
+            tenthPercentage: (fetchedStudent?.tenthPercentage) || findStudentField('tenthPercentage', ['tenth','10th','studentTenthPercentage']) || 'N/A',
+            twelfthPercentage: (fetchedStudent?.twelfthPercentage) || findStudentField('twelfthPercentage', ['twelfth','12th','studentTwelfthPercentage']) || 'N/A',
+            diplomaPercentage: (fetchedStudent?.diplomaPercentage) || findStudentField('diplomaPercentage', ['diploma','studentDiplomaPercentage']) || 'N/A',
+            gender: (fetchedStudent?.gender) || findStudentField('gender', ['sex','studentGender']) || 'N/A',
+            // Merge rounds from multiple sources, prioritize application document data
+            rounds: {
+              ...(fetchedStudent?.rounds || {}),
+              ...(existingStudent.rounds || {}),
+              ...(appData.student_rounds || {}),
+              // Write application-level last so it takes precedence
+              ...(appData.student?.rounds || {}),
+              ...(appData.rounds || {})
+            }
           };
-          
-          console.log('Processed student data:', appData.student);
-          console.log('Field mapping results:');
-          console.log('- name found:', findStudentField('name', ['studentName', 'fullName', 'student_name']));
-          console.log('- rollNumber found:', findStudentField('rollNumber', ['roll', 'studentRollNumber', 'student_rollNumber']));
-          console.log('- department found:', findStudentField('department', ['dept', 'studentDepartment', 'student_department']));
-          console.log('- cgpa found:', findStudentField('cgpa', ['gpa', 'studentCgpa', 'student_cgpa']));
-          console.log('- email found:', findStudentField('email', ['studentEmail', 'student_email']));
-          
-          // Fetch student data from students collection
-          // Prefer student_id field, fallback to studentId or existing student.id, else lookup by rollNumber
-          try {
-            const fallbackRoll = appData.student?.rollNumber && appData.student.rollNumber !== 'N/A' ? appData.student.rollNumber : null;
-            const candidateId = (appData.student_id || appData.studentId || existingStudent.id);
-            const normalizedCandidateId = (candidateId && candidateId !== 'unknown') ? candidateId : null;
 
-            let studentSnap = null;
-            let resolvedStudentId = null;
+          return {
+            ...appData,
+            student: mergedStudent,
+            reachedRound: appData.reachedRound || 0,
+          };
+        });
 
-            if (normalizedCandidateId) {
-              const studentRef = doc(db, 'students', normalizedCandidateId);
-              studentSnap = await getDoc(studentRef);
-              resolvedStudentId = normalizedCandidateId;
-            }
-
-            // If not found by ID, try lookup by rollNumber
-            if (!studentSnap || !studentSnap.exists()) {
-              if (fallbackRoll) {
-                const studentsRef = collection(db, 'students');
-                const q = query(studentsRef, where('rollNumber', '==', fallbackRoll));
-                const snap = await getDocs(q);
-                if (!snap.empty) {
-                  studentSnap = snap.docs[0];
-                  resolvedStudentId = studentSnap.id;
-                }
-              }
-            }
-
-            if (studentSnap && studentSnap.exists()) {
-              const studentData = studentSnap.data();
-              console.log('Fetched student data for', resolvedStudentId, ':', studentData);
-
-              // Merge student data with existing student object
-              appData.student = {
-                ...appData.student,
-                id: resolvedStudentId || appData.student.id,
-                name: studentData.name || appData.student.name || 'N/A',
-                rollNumber: studentData.rollNumber || appData.student.rollNumber || 'N/A',
-                department: studentData.department || appData.student.department || 'N/A',
-                cgpa: studentData.cgpa || appData.student.cgpa || '0',
-                email: studentData.email || appData.student.email || 'N/A',
-                phone: studentData.phone || appData.student.phone || 'N/A',
-                currentArrears: studentData.currentArrears || appData.student.currentArrears || '0',
-                historyArrears: studentData.historyArrears || appData.student.historyArrears || '0',
-                skills: Array.isArray(studentData.skills) ? studentData.skills : appData.student.skills,
-                tenthPercentage: studentData.tenthPercentage || appData.student.tenthPercentage || 'N/A',
-                twelfthPercentage: studentData.twelfthPercentage || appData.student.twelfthPercentage || 'N/A',
-                diplomaPercentage: studentData.diplomaPercentage || appData.student.diplomaPercentage || 'N/A',
-                gender: studentData.gender || appData.student.gender || 'N/A',
-                rounds: studentData.rounds || appData.student.rounds || {}
-              };
-            } else {
-              if (normalizedCandidateId || fallbackRoll) {
-                console.warn('Student not found for identifier:', normalizedCandidateId || fallbackRoll);
-              }
-            }
-          } catch (error) {
-            console.error('Error fetching student data (by id or rollNumber):', error);
-          }
-          
-          // Add round data to application
-          appData.reachedRound = appData.reachedRound || 0;
-          
-          return appData;
-        }));
-     
-        console.log('Fetched applications:', applicationsData.length, applicationsData);
+        __DEV__ && console.log('Fetched applications (optimized):', applicationsData.length);
+        if (!isMountedRef.current) return;
         setApplications(applicationsData);
         setFilteredApplications(applicationsData);
-        // Initialize round shortlists
+        // Initialize round shortlists and calculate applicant counts
         const shortlists = {};
+        const counts = {};
         if (Array.isArray(jobData.rounds)) {
           jobData.rounds.forEach((_, index) => {
-            shortlists[index] = applicationsData
-              .filter(app => app.reachedRound >= index)
-              .map(app => app.id);
+            const roundApplicants = applicationsData.filter(app => {
+              const studentRounds = app.student?.rounds || {};
+              const appRounds = app.rounds || {};
+              // For round 0, show all applicants
+              if (index === 0) return true;
+              // For subsequent rounds, only show shortlisted from previous round
+              const prevRoundName = jobData.rounds[index - 1]?.name || jobData.rounds[index - 1]?.roundName || `Round ${index}`;
+              const resolvedPrevKey = resolveExistingRoundKey(prevRoundName, studentRounds) || resolveExistingRoundKey(prevRoundName, appRounds) || prevRoundName;
+              const prevStatus = studentRounds[resolvedPrevKey] || appRounds[resolvedPrevKey] || 'pending';
+              return prevStatus === 'shortlisted';
+            });
+            shortlists[index] = roundApplicants.map(app => app.id);
+            counts[index] = roundApplicants.length;
           });
+          // Count selected candidates
+          counts.selected = applicationsData.filter(app => {
+            const studentRounds = app.student?.rounds || {};
+            const appRounds = app.rounds || {};
+            return [...Object.values(studentRounds), ...Object.values(appRounds)].includes('selected');
+          }).length;
         }
         setRoundShortlists(shortlists);
+        setApplicantCounts(counts);
       } else {
         toast.error("Job not found!");
         navigate('/admin/manage-applications');
       }
     } catch (error) {
       console.error("Error fetching data:", error);
-      toast.error("Error loading job data");
+      if (isMountedRef.current) toast.error("Error loading job data");
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) setLoading(false);
+      isFetchingRef.current = false;
     }
   }, [jobId, navigate]);
-  // Fetch data on mount
+  // Fetch data on mount and when jobId changes (avoid dependency on function identity)
   useEffect(() => {
     fetchJobAndApplications();
-  }, [fetchJobAndApplications]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId]);
   // Filter applications based on round information module
   useEffect(() => {
     if (!job) return;
@@ -345,13 +440,26 @@ const JobApplications = () => {
         return isEligible ? (meetsGPA && meetsCurrentArrears && meetsHistoryArrears) : !(meetsGPA && meetsCurrentArrears && meetsHistoryArrears);
       });
     }
-    // Department filter
-    if (filters.department !== 'all') {
-      filtered = filtered.filter(app => app.student?.department === filters.department);
+    // Department filter (single-select)
+    if (filters.department && filters.department !== 'all') {
+      filtered = filtered.filter(app => (app.student?.department || '') === filters.department);
     }
-    // CGPA filter
-    if (filters.cgpa) {
-      filtered = filtered.filter(app => parseFloat(app.student?.cgpa || '0') >= parseFloat(filters.cgpa));
+    // Gender filter (single-select)
+    if (filters.gender && filters.gender !== 'all') {
+      const g = app => (app.student?.gender || 'N/A');
+      filtered = filtered.filter(app => g(app) === filters.gender);
+    }
+    // CGPA min filter
+    if (filters.cgpaMin !== '' && filters.cgpaMin !== null && filters.cgpaMin !== undefined) {
+      filtered = filtered.filter(app => parseFloat(app.student?.cgpa || '0') >= parseFloat(filters.cgpaMin));
+    }
+    // Current arrears max filter
+    if (filters.currentArrearsMax !== '' && filters.currentArrearsMax !== null && filters.currentArrearsMax !== undefined) {
+      filtered = filtered.filter(app => parseInt(app.student?.currentArrears || '0') <= parseInt(filters.currentArrearsMax));
+    }
+    // History arrears max filter
+    if (filters.historyArrearsMax !== '' && filters.historyArrearsMax !== null && filters.historyArrearsMax !== undefined) {
+      filtered = filtered.filter(app => parseInt(app.student?.historyArrears || '0') <= parseInt(filters.historyArrearsMax));
     }
     // Search filter (space-separated multi-term)
     if (filters.searchTerm) {
@@ -392,20 +500,36 @@ const JobApplications = () => {
         }
       });
     }
-    console.log('Filtering debug:', {
+    __DEV__ && console.debug('Filtering debug:', {
       originalApplicationsLength: applications.length,
       filteredApplicationsLength: filtered.length,
       filters
     });
     setFilteredApplications(filtered);
   }, [applications, filters, job, selectedRoundTransition, currentRound, visibleColumns, questionFilters]);
-  // Pagination logic
-  const indexOfLastApp = currentPage * applicationsPerPage;
-  const indexOfFirstApp = indexOfLastApp - applicationsPerPage;
-  const currentApplications = filteredApplications.slice(indexOfFirstApp, indexOfLastApp);
-  const totalPages = Math.ceil(filteredApplications.length / applicationsPerPage);
   
-  console.log('Pagination debug:', {
+  // Also update applicant counts for the current round when filteredApplications change
+  useEffect(() => {
+    // Safeguards
+    if (!job || !Array.isArray(job.rounds)) return;
+    const counts = { ...applicantCounts };
+    counts[currentRoundIndex] = filteredApplications.length;
+    setApplicantCounts(counts);
+  }, [filteredApplications, job, currentRoundIndex]);
+  // Pagination logic (memoized to stabilize props)
+  const { indexOfFirstApp, indexOfLastApp, currentApplications, totalPages } = useMemo(() => {
+    const last = currentPage * applicationsPerPage;
+    const first = last - applicationsPerPage;
+    const slice = filteredApplications.slice(first, last);
+    return {
+      indexOfFirstApp: first,
+      indexOfLastApp: last,
+      currentApplications: slice,
+      totalPages: Math.ceil(filteredApplications.length / applicationsPerPage)
+    };
+  }, [filteredApplications, currentPage, applicationsPerPage]);
+
+  __DEV__ && console.debug('Pagination debug:', {
     filteredApplicationsLength: filteredApplications.length,
     currentPage,
     applicationsPerPage,
@@ -484,6 +608,8 @@ const JobApplications = () => {
       await deleteDoc(doc(db, "jobs", jobId));
       toast.success("Job deleted successfully");
       navigate('/admin/manage-applications');
+      // Log activity (best effort)
+      try { await logJobActivity(jobId, 'job_deleted', { company: job?.company, position: job?.position }); } catch {}
     } catch (error) {
       console.error("Error deleting job:", error);
       toast.error("Failed to delete job");
@@ -540,39 +666,92 @@ const JobApplications = () => {
         return;
       }
       const applicationRef = doc(db, "applications", applicationId);
-      await updateDoc(applicationRef, {
-        [`student.rounds.${currentRound}`]: newStatus,
+      // Resolve the correct existing round key to avoid creating a new round label
+      const studentRoundsMap = applicationToUpdate?.student?.rounds || {};
+      const resolvedKey = resolveExistingRoundKey(currentRound, studentRoundsMap) || currentRound;
+
+      // Determine where the rounds map exists in this document
+      const hasTopLevelRounds = applicationToUpdate && typeof applicationToUpdate.rounds === 'object' && applicationToUpdate.rounds !== null;
+
+      // Build field-path updates to only touch the intended round key
+      const fieldUpdates = {
         updatedAt: new Date(),
-        lastModifiedBy: 'admin', // Track who made the change
-        companyName: job?.company // Use the company name from the job details
-      });
+        lastModifiedBy: 'admin',
+        companyName: job?.company
+      };
+
+      if (hasTopLevelRounds) {
+        fieldUpdates[`rounds.${resolvedKey}`] = newStatus;
+      } else {
+        fieldUpdates[`student.rounds.${resolvedKey}`] = newStatus;
+      }
+
+      await updateDoc(applicationRef, fieldUpdates);
       // Update company stats after status change
       await updateCompanyStats(job?.company);
+      // Log activity for round status update (best effort)
+      try {
+        await logJobActivity(jobId, 'round_status_updated', {
+          applicationId,
+          studentId: applicationToUpdate.student?.id || applicationToUpdate.studentId || applicationToUpdate.student_id,
+          round: resolvedKey,
+          status: newStatus
+        });
+      } catch {}
       // Update local state
-      const updatedApplications = applications.map(app =>
-        app.id === applicationId ? {
-          ...app,
-          student: {
-            ...app.student || {},
-            rounds: {
-              ...app.student?.rounds || {},
-              [currentRound]: newStatus
-            }
-          },
-          updatedAt: new Date(),
-          lastModifiedBy: 'admin',
-          companyName: job?.company
-        } : app
-      );
+      const updatedApplications = applications.map(app => {
+        if (app.id !== applicationId) return app;
+
+        const nextApp = { ...app };
+        // Sync student.rounds
+        nextApp.student = {
+          ...(app.student || {}),
+          rounds: {
+            ...(app.student?.rounds || {}),
+            [resolvedKey]: newStatus
+          }
+        };
+        // Sync top-level rounds if it exists on this document
+        if (hasTopLevelRounds) {
+          nextApp.rounds = {
+            ...(app.rounds || {}),
+            [resolvedKey]: newStatus
+          };
+        }
+        nextApp.updatedAt = new Date();
+        nextApp.lastModifiedBy = 'admin';
+        nextApp.companyName = job?.company;
+        return nextApp;
+      });
       setApplications(updatedApplications);
       setFilteredApplications(updatedApplications);
       setOpenDropdownId(null); // Close dropdown
       toast.success(`Round status updated to ${newStatus}`);
 
-      // Send student notification and optionally email
+      // Recalculate selected count for progress bar immediately
+      try {
+        const counts = { ...applicantCounts };
+        counts.selected = updatedApplications.filter(app => {
+          const studentRounds = app.student?.rounds || {};
+          const appRounds = app.rounds || {};
+          return [...Object.values(studentRounds), ...Object.values(appRounds)].includes('selected');
+        }).length;
+        setApplicantCounts(counts);
+      } catch (e) {
+        console.warn('Failed to recompute applicantCounts.selected', e);
+      }
+
+      // Send student notification with push notification
       try {
         const recipientId = applicationToUpdate.student?.id || applicationToUpdate.studentId || applicationToUpdate.student_id;
         if (recipientId) {
+          // Send push notification
+          await notifyApplicationStatusUpdate({
+            job: { position: job?.position || 'Unknown Position', company: job?.company || 'Company' },
+            status: newStatus
+          }, recipientId);
+          
+          // Also send traditional notification
           const sendEmail = window.confirm('Also email the student about this status update?');
           await createStatusUpdateNotification(recipientId, {
             job: { position: job?.position || 'Unknown Position', company: job?.company || 'Company' },
@@ -587,7 +766,216 @@ const JobApplications = () => {
       toast.error(`Failed to update round status: ${error.message}`);
     }
   };
-  // Function to handle bulk actions with validation
+  // Enhanced bulk actions handler
+  const handleEnhancedBulkAction = async (actionType) => {
+    if (!job || !job.rounds) {
+      toast.error('Job rounds not configured');
+      return;
+    }
+
+    setIsRoundActionLoading(true);
+    
+    try {
+      const batch = writeBatch(db);
+      const timestamp = new Date();
+      const currentRoundName = job.rounds[currentRoundIndex]?.name || job.rounds[currentRoundIndex]?.roundName || `Round ${currentRoundIndex + 1}`;
+      const nextRoundName = job.rounds[currentRoundIndex + 1]?.name || job.rounds[currentRoundIndex + 1]?.roundName || `Round ${currentRoundIndex + 2}`;
+      const isFinalRound = currentRoundIndex >= job.rounds.length - 1;
+      
+      let applicationsToProcess = [];
+      let applicationsToReject = [];
+      
+      let applicationsToWaitlist = [];
+      
+      switch (actionType) {
+        case 'shortlist':
+          applicationsToProcess = applications.filter(app => selectedApplications.includes(app.id));
+          applicationsToReject = filteredApplications.filter(app => !selectedApplications.includes(app.id));
+          break;
+          
+        case 'select':
+          applicationsToProcess = applications.filter(app => selectedApplications.includes(app.id));
+          applicationsToReject = filteredApplications.filter(app => !selectedApplications.includes(app.id));
+          break;
+          
+        case 'waitlist':
+          applicationsToWaitlist = applications.filter(app => selectedApplications.includes(app.id));
+          break;
+          
+        case 'reject':
+          applicationsToReject = applications.filter(app => selectedApplications.includes(app.id));
+          break;
+          
+        
+          
+        case 'reject-remaining':
+          applicationsToProcess = applications.filter(app => selectedApplications.includes(app.id));
+          applicationsToReject = filteredApplications.filter(app => !selectedApplications.includes(app.id));
+          break;
+      }
+      
+      // Process shortlisted/selected applications (create or update the current round key)
+      for (const app of applicationsToProcess) {
+        const studentRounds = app.student?.rounds || {};
+        const currentKey = resolveExistingRoundKey(currentRoundName, studentRounds) || currentRoundName;
+
+        const statusForApp = (actionType === 'select' || (isFinalRound && actionType === 'shortlist')) ? 'selected' : 'shortlisted';
+        const appRef = doc(db, 'applications', app.id);
+
+        const updates = {
+          updatedAt: timestamp,
+          lastModifiedBy: 'admin',
+          status: statusForApp
+        };
+
+        const hasTopLevelRounds = app && typeof app.rounds === 'object' && app.rounds !== null;
+        // Always write to both application-level maps for robustness
+        updates[`rounds.${currentKey}`] = statusForApp;
+        updates[`student.rounds.${currentKey}`] = statusForApp;
+
+        batch.update(appRef, updates);
+
+        // Optionally reflect on student doc as a single-field path update
+        if (app.student?.id) {
+          const studentRef = doc(db, 'students', app.student.id);
+          batch.update(studentRef, {
+            [`rounds.${currentKey}`]: statusForApp
+          });
+        }
+        
+        // Send notifications
+        try {
+          if (actionType === 'select' || (isFinalRound && actionType === 'shortlist')) {
+            await sendSelectionNotification(
+              app.student?.id,
+              jobId,
+              job?.position || 'Unknown Position',
+              job?.company || 'Company',
+              true
+            );
+          } else {
+            await createStatusUpdateNotification(app.student?.id, {
+              job: { position: job?.position, company: job?.company },
+              status: 'shortlisted'
+            });
+          }
+        } catch (notifyErr) {
+          console.error('Error sending notification:', notifyErr);
+        }
+      }
+      
+      // Process waitlisted applications (create or update the current round key)
+      for (const app of applicationsToWaitlist) {
+        const studentRounds = app.student?.rounds || {};
+        const currentKey = resolveExistingRoundKey(currentRoundName, studentRounds) || currentRoundName;
+
+        const appRef = doc(db, 'applications', app.id);
+        const updates = {
+          updatedAt: timestamp,
+          lastModifiedBy: 'admin',
+          status: 'onHold'
+        };
+        const hasTopLevelRounds = app && typeof app.rounds === 'object' && app.rounds !== null;
+        updates[`rounds.${currentKey}`] = 'waitlisted';
+        updates[`student.rounds.${currentKey}`] = 'waitlisted';
+        batch.update(appRef, updates);
+
+        if (app.student?.id) {
+          const studentRef = doc(db, 'students', app.student.id);
+          batch.update(studentRef, {
+            [`rounds.${currentKey}`]: 'waitlisted'
+          });
+        }
+        
+        // Send waitlist notification
+        try {
+          await createStatusUpdateNotification(app.student?.id, {
+            job: { position: job?.position, company: job?.company },
+            status: 'waitlisted'
+          });
+        } catch (notifyErr) {
+          console.error('Error sending waitlist notification:', notifyErr);
+        }
+      }
+      
+      // Process rejected applications (create or update the current round key)
+      for (const app of applicationsToReject) {
+        const studentRounds = app.student?.rounds || {};
+        const currentKey = resolveExistingRoundKey(currentRoundName, studentRounds) || currentRoundName;
+
+        const appRef = doc(db, 'applications', app.id);
+        const updates = {
+          updatedAt: timestamp,
+          lastModifiedBy: 'admin'
+        };
+        const hasTopLevelRounds = app && typeof app.rounds === 'object' && app.rounds !== null;
+        updates[`rounds.${currentKey}`] = 'rejected';
+        updates[`student.rounds.${currentKey}`] = 'rejected';
+        batch.update(appRef, updates);
+
+        if (app.student?.id) {
+          const studentRef = doc(db, 'students', app.student.id);
+          batch.update(studentRef, {
+            [`rounds.${currentKey}`]: 'rejected'
+          });
+        }
+        
+        // Send rejection notification
+        try {
+          await createStatusUpdateNotification(app.student?.id, {
+            job: { position: job?.position, company: job?.company },
+            status: 'rejected'
+          });
+        } catch (notifyErr) {
+          console.error('Error sending rejection notification:', notifyErr);
+        }
+      }
+      
+      await batch.commit();
+      
+      // Update job's current round ONLY if operating on the job's current round view and moving forward
+      const jobCurrentIdx = job?.currentRoundIndex ?? 0;
+      if (
+        currentRoundIndex === jobCurrentIdx &&
+        applicationsToProcess.length > 0 &&
+        !isFinalRound &&
+        (actionType === 'shortlist' || actionType === 'reject-remaining')
+      ) {
+        const nextIndex = currentRoundIndex + 1;
+        await updateDoc(doc(db, 'jobs', jobId), {
+          currentRoundIndex: nextIndex,
+          currentRound: nextRoundName
+        });
+        setCurrentRoundIndex(nextIndex);
+        setJob(prev => ({ ...prev, currentRoundIndex: nextIndex, currentRound: nextRoundName }));
+        // Log current round changed
+        try { await logJobActivity(jobId, 'current_round_changed', { fromIndex: nextIndex - 1, toIndex: nextIndex, toName: nextRoundName }); } catch {}
+      }
+      
+      // Send admin notification
+      try {
+        await createSystemAlertNotification(
+          'Round Action Completed',
+          `${applicationsToProcess.length} students processed, ${applicationsToReject.length} students rejected for ${currentRoundName}`,
+          `/admin/job-applications/${jobId}`
+        );
+      } catch (error) {
+        console.error('Error sending admin notification:', error);
+      }
+      
+      toast.success(`Action completed successfully! ${applicationsToProcess.length} shortlisted, ${applicationsToReject.length} rejected.`);
+      setSelectedApplications([]);
+      await fetchJobAndApplications(); // Refresh data
+      
+    } catch (error) {
+      console.error('Error in enhanced bulk action:', error);
+      toast.error(`Failed to complete action: ${error.message}`);
+    } finally {
+      setIsRoundActionLoading(false);
+    }
+  };
+
+  // Function to handle bulk actions with validation (legacy support)
   const handleBulkAction = async (newStatus) => {
     if (selectedApplications.length === 0) {
       toast.warning("No applications selected");
@@ -603,34 +991,60 @@ const JobApplications = () => {
       const timestamp = new Date();
       // Get current status of all selected applications for tracking changes
       const selectedApps = applications.filter(app => selectedApplications.includes(app.id));
-      selectedApps.forEach(app => {
-        const appRef = doc(db, "applications", app.id);
-        batch.update(appRef, {
-          [`student.rounds.${currentRound}`]: newStatus,
-          updatedAt: timestamp,
-          lastModifiedBy: 'admin',
-          bulkUpdateId: timestamp.getTime(), // To track which updates were part of the same bulk action
-          companyName: job?.company // Use the company name from the job details
-        });
-      });
+      
+      // Determine the current round name from the job data and current round index
+      const actualCurrentRound = job?.rounds?.[currentRoundIndex]?.name || job?.rounds?.[currentRoundIndex]?.roundName || `Round ${currentRoundIndex + 1}`;
+      console.log(`Bulk action for round: "${actualCurrentRound}" (index: ${currentRoundIndex})`);
+      
+      for (const app of selectedApps) {
+        const applicationId = app.id;
+        const studentRoundsMap = app.student?.rounds || {};
+        console.log(`Processing app ${applicationId}, student rounds:`, Object.keys(studentRoundsMap));
+        
+        const resolvedKey = resolveExistingRoundKey(actualCurrentRound, studentRoundsMap);
+        console.log(`Resolved key for "${actualCurrentRound}": "${resolvedKey}"`);
+        
+        // Only update if we found an exact match for the round
+        if (resolvedKey && resolvedKey in studentRoundsMap) {
+          const appRef = doc(db, "applications", applicationId);
+          batch.update(appRef, {
+            [`student.rounds.${resolvedKey}`]: newStatus,
+            updatedAt: timestamp,
+            lastModifiedBy: 'admin',
+            bulkUpdateId: timestamp.getTime(),
+            companyName: job?.company
+          });
+          console.log(`Updated app ${applicationId}: ${resolvedKey} -> ${newStatus}`);
+        } else {
+          console.warn(`Skipping application ${applicationId}: Round "${actualCurrentRound}" not found in student rounds. Available rounds:`, Object.keys(studentRoundsMap));
+        }
+      }
       await batch.commit();
-      // Update local state with full change tracking
-      const updatedApplications = applications.map(app =>
-        selectedApplications.includes(app.id) ? {
-          ...app,
-          student: {
-            ...app.student || {},
-            rounds: {
-              ...app.student?.rounds || {},
-              [currentRound]: newStatus
-            }
-          },
-          updatedAt: timestamp,
-          lastModifiedBy: 'admin',
-          bulkUpdateId: timestamp.getTime(),
-          companyName: job?.company
-        } : app
-      );
+      // Update local state with full change tracking using the actual current round
+      const updatedApplications = applications.map(app => {
+        if (selectedApplications.includes(app.id)) {
+          const studentRoundsMap = app.student?.rounds || {};
+          const resolvedKey = resolveExistingRoundKey(actualCurrentRound, studentRoundsMap);
+          
+          if (resolvedKey && resolvedKey in studentRoundsMap) {
+            return {
+              ...app,
+              student: {
+                ...app.student || {},
+                rounds: {
+                  ...app.student?.rounds || {},
+                  [resolvedKey]: newStatus
+                }
+              },
+              updatedAt: timestamp,
+              lastModifiedBy: 'admin',
+              bulkUpdateId: timestamp.getTime(),
+              companyName: job?.company
+            };
+          }
+        }
+        return app;
+      });
       setApplications(updatedApplications);
       setFilteredApplications(updatedApplications);
       const statusChanges = selectedApps.map(app => `${app.student?.name || 'Unknown Student'} → ${newStatus}`).join('\n');
@@ -703,6 +1117,13 @@ const JobApplications = () => {
       setCurrentRoundIndex(nextIndex);
       setJob({ ...job, currentRoundIndex: nextIndex });
       toast.success("Round completed successfully");
+      // Log round completed
+      try {
+        await logJobActivity(jobId, 'round_completed', {
+          fromIndex: nextIndex - 1,
+          toIndex: nextIndex,
+        });
+      } catch {}
     } catch (error) {
       toast.error("Failed to complete round");
     }
@@ -721,9 +1142,53 @@ const JobApplications = () => {
       setJob({ ...job, rounds: newRounds });
       setEditingRounds(false);
       toast.success("Rounds updated successfully");
+      // Log rounds edited
+      try {
+        await logJobActivity(jobId, 'rounds_updated', {
+          rounds: (newRounds || []).map(r => r?.name || r?.roundName || '').filter(Boolean),
+          count: (newRounds || []).length
+        });
+      } catch {}
     } catch (error) {
       toast.error("Failed to update rounds");
     }
+  };
+  
+  // Handle round click from progress bar
+  const handleRoundClick = (roundIndex) => {
+    // Allow navigation to any completed round and the current job round
+    const maxNavigableIndex = Math.max(currentRoundIndex, job?.currentRoundIndex ?? 0);
+    if (roundIndex <= maxNavigableIndex) {
+      setCurrentRoundIndex(roundIndex);
+      const roundName = job?.rounds?.[roundIndex]?.name || job?.rounds?.[roundIndex]?.roundName || `Round ${roundIndex + 1}`;
+      setCurrentRound(roundName);
+      // Log round view change (best effort)
+      try { logJobActivity(jobId, 'round_view_changed', { roundIndex, roundName }); } catch {}
+    }
+  };
+  
+  // Handle select all in current filtered view
+  const handleSelectAllApplications = () => {
+    try {
+      const allIds = filteredApplications.map(app => app.id);
+      setSelectedApplications(allIds);
+    } catch (e) {
+      console.warn('handleSelectAllApplications failed', e);
+    }
+  };
+  
+  // Handle clear selection
+  const handleClearSelection = () => {
+    setSelectedApplications([]);
+  };
+
+  // Jump back to the job's current round quickly
+  const goToCurrentRound = () => {
+    const jobIdx = job?.currentRoundIndex ?? 0;
+    setCurrentRoundIndex(jobIdx);
+    const roundName = job?.rounds?.[jobIdx]?.name || job?.rounds?.[jobIdx]?.roundName || `Round ${jobIdx + 1}`;
+    setCurrentRound(roundName);
+    try { logJobActivity(jobId, 'round_view_changed', { roundIndex: jobIdx, roundName }); } catch {}
   };
   // Function to export data to Excel with all content
   const exportToExcel = () => {
@@ -731,34 +1196,52 @@ const JobApplications = () => {
       toast.warning("No applications selected for export");
       return;
     }
- 
+
     // Filter selected applications
     const selectedData = applications.filter(app => selectedApplications.includes(app.id));
- 
+
     // Format data for Excel with all possible fields
-    const excelData = selectedData.map(app => ({
-      'Name': app.student?.name || 'N/A',
-      'Roll Number': app.student?.rollNumber || 'N/A',
-      'Department': app.student?.department || 'N/A',
-      'CGPA': app.student?.cgpa || 'N/A',
-      'Email': app.student?.email || 'N/A',
-      'Phone': app.student?.phone || 'N/A',
-      'Current Arrears': app.student?.currentArrears || 'N/A',
-      'History Arrears': app.student?.historyArrears || 'N/A',
-      'Skills': Array.isArray(app.student?.skills) ? app.student.skills.join(', ') : 'N/A',
-      '10th Percentage': app.student?.tenthPercentage || 'N/A',
-      '12th Percentage': app.student?.twelfthPercentage || 'N/A',
-      'Diploma Percentage': app.student?.diplomaPercentage || 'N/A',
-      'Gender': app.student?.gender || 'N/A',
-      'Round Status': roundStatusConfig[app.student?.rounds?.[currentRound]]?.label || 'Pending',
-      // Add more fields like questions, feedback, resume link, etc.
-      'Question 1': app.answers?.[0] || '', // Assuming answers array
-      'Question 2': app.answers?.[1] || '',
-      'Feedback': app.feedback || '',
-      'Resume': app.resume || '',
-      'Predict': app.predict || '' // Assuming some predict field
-    }));
- 
+    const excelData = selectedData.map(app => {
+      const row = {
+        'Name': app.student?.name || 'N/A',
+        'Roll Number': app.student?.rollNumber || 'N/A',
+        'Department': app.student?.department || 'N/A',
+        'CGPA': app.student?.cgpa || 'N/A',
+        'Email': app.student?.email || 'N/A',
+        'Phone': app.student?.phone || 'N/A',
+        'Current Arrears': app.student?.currentArrears || 'N/A',
+        'History Arrears': app.student?.historyArrears || 'N/A',
+        'Skills': Array.isArray(app.student?.skills) ? app.student.skills.join(', ') : 'N/A',
+        '10th Percentage': app.student?.tenthPercentage || 'N/A',
+        '12th Percentage': app.student?.twelfthPercentage || 'N/A',
+        'Diploma Percentage': app.student?.diplomaPercentage || 'N/A',
+        'Gender': app.student?.gender || 'N/A',
+        'Round Status': roundStatusConfig?.[app.student?.rounds?.[currentRound]]?.label || 'Pending',
+        'Feedback': app.feedback || '',
+        'Resume': app.resume || '',
+        'Predict': app.predict || ''
+      };
+
+      // Add dynamic screening question columns aligned with answers
+      const questions = Array.isArray(job?.screeningQuestions) ? job.screeningQuestions : [];
+      const answers = Array.isArray(app.screening_answers) ? app.screening_answers : [];
+
+      if (questions.length > 0) {
+        questions.forEach((q, idx) => {
+          const labelBase = q?.question ? `Q${idx + 1}: ${q.question}` : `Q${idx + 1}`;
+          const ans = answers[idx];
+          row[labelBase] = (ans !== undefined && ans !== null) ? ans : '';
+        });
+      } else if (Array.isArray(app.answers)) {
+        // Legacy fallback if job questions are unavailable but answers exist under a legacy key
+        app.answers.forEach((ans, idx) => {
+          row[`Q${idx + 1}`] = (ans !== undefined && ans !== null) ? ans : '';
+        });
+      }
+
+      return row;
+    });
+
     // Create worksheet
     const worksheet = XLSX.utils.json_to_sheet(excelData);
     const workbook = XLSX.utils.book_new();
@@ -838,14 +1321,22 @@ const JobApplications = () => {
         if (application) {
           const studentData = application.student || {};
           const currentRounds = studentData.rounds || {};
-       
+      
           const updatedRounds = { ...currentRounds };
+          const currentKey = resolveExistingRoundKey(currentRound, currentRounds) || currentRound;
+          const nextKey = nextRound ? resolveExistingRoundKey(nextRound, currentRounds) : null;
           if (nextRound) {
-            updatedRounds[currentRound] = 'shortlisted';
-            updatedRounds[nextRound] = 'pending';
+            if (currentKey in updatedRounds) {
+              updatedRounds[currentKey] = 'shortlisted';
+            }
+            if (nextKey && (nextKey in updatedRounds)) {
+              updatedRounds[nextKey] = 'pending';
+            }
           } else {
             // Finalize at last round → mark as selected in rounds
-            updatedRounds[currentRound] = 'selected';
+            if (currentKey in updatedRounds) {
+              updatedRounds[currentKey] = 'selected';
+            }
           }
        
           const studentRef = doc(db, "students", application.student.id);
@@ -894,12 +1385,11 @@ const JobApplications = () => {
         if (application) {
           const studentData = application.student || {};
           const currentRounds = studentData.rounds || {};
-       
-          const updatedRounds = {
-            ...currentRounds,
-            [currentRound]: 'rejected'
-          };
-       
+          const updatedRounds = { ...currentRounds };
+          const currentKey = resolveExistingRoundKey(currentRound, currentRounds) || currentRound;
+          if (currentKey in updatedRounds) {
+            updatedRounds[currentKey] = 'rejected';
+          }
           const studentRef = doc(db, "students", application.student.id);
           batch.update(studentRef, {
             rounds: updatedRounds
@@ -1153,6 +1643,8 @@ const JobApplications = () => {
       setQuestionFilters(newFilters);
     }
   }, [job]);
+  
+  
   return (
     <div className="p-7 sm:px-6 lg:px-8 max-w-[1170px] mx-auto">
       <ToastContainer />
@@ -1164,8 +1656,8 @@ const JobApplications = () => {
       </div>
       {/* Main Content */}
       <div className="space-y-8">
-                 {/* Header Section with Job Details */}
-         <div className="bg-gradient-to-br from-white to-blue-50 rounded-xl shadow-lg border border-blue-100 overflow-hidden">
+        {/* Header Section with Job Details */}
+        <div className="bg-gradient-to-br from-white to-blue-50 rounded-xl shadow-lg border border-blue-100 overflow-hidden mt-4">
            {/* Header with gradient background */}
            <div className="bg-gradient-to-r from-slate-300 to-slate-400 p-6 text-gray-800">
              <div className="flex justify-between items-start">
@@ -1732,124 +2224,72 @@ const JobApplications = () => {
                </div>
              </div>
            )}
-        </div>
-       {/* Round Information Module */}
-<div className="bg-white rounded-2xl shadow-md border border-gray-200 overflow-hidden">
-  {/* Header */}
-  <div className="bg-gray-50 text-gray-900 p-6 border-b border-gray-200">
-    <div className="mb-4">
-      <h2 className="text-2xl font-semibold tracking-tight">Round Information</h2>
-      <p className="text-sm text-gray-500 mt-1">Manage and transition students between rounds efficiently.</p>
-    </div>
-    {/* Round Selection and Current Round Display */}
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-      <div>
-        <label className="block text-sm font-medium text-gray-700 mb-2">
-          Select Round Transition
-        </label>
-        <select
-          value={selectedRoundTransition}
-          onChange={(e) => handleRoundTransitionChange(e.target.value)}
-          className="w-full p-3 bg-white border-2 border-emerald-500 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-sm"
-        >
-          <option value="">Select a round transition</option>
-          {availableRounds.map((transition, index) => (
-            <option key={index} value={transition}>
-              {transition}
-            </option>
-          ))}
-        </select>
-      </div>
-      <div>
-        <label className="block text-sm font-medium text-gray-700 mb-2">
-          Current Round
-        </label>
-        <div className="p-3 bg-gray-100 border border-gray-200 rounded-md">
-          <span className="text-base font-semibold text-gray-900">{currentRound}</span>
-          <p className="text-sm text-gray-600 mt-1">
-            {filteredApplications.length} Students eligible
-          </p>
-        </div>
-      </div>
-    </div>
-  </div>
-  {/* Round Management Controls */}
-  <div className="p-6 border-b border-gray-200">
-    <div className="flex flex-wrap items-center gap-4">
-      <div className="flex flex-wrap gap-3">
-            <button
-              onClick={handleShortlistStudents}
-              disabled={selectedApplications.length === 0 || roundLoading || !selectedRoundTransition}
-              className="px-4 py-2 bg-emerald-600 text-white rounded-md hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition"
-            >
-              {selectedRoundTransition
-                ? `${getNextRoundFromTransition(selectedRoundTransition) ? 'Shortlist to ' + getNextRoundFromTransition(selectedRoundTransition) : 'Finalize Shortlist'} (${selectedApplications.length})`
-                : `Select a Round to Shortlist`}
-            </button>
-            <button
-              onClick={handleRejectStudents}
-              disabled={selectedApplications.length === 0 || roundLoading || !selectedRoundTransition}
-              className="px-4 py-2 bg-red-500 text-white rounded-md hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed transition"
-            >
-              {selectedRoundTransition
-                ? `Reject for ${currentRound} (${selectedApplications.length})`
-                : `Select a Round to Reject`}
-            </button>
-      </div>
-      {roundLoading && (
-        <div className="flex items-center gap-2 text-gray-500">
-          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-emerald-600"></div>
-          <span className="text-sm">Processing...</span>
-        </div>
-      )}
-    </div>
-  </div>
-  {/* Round Information Note */}
-  <div className="p-6 bg-gray-50">
-    <div className="flex items-start gap-3">
-      <svg className="w-5 h-5 text-emerald-600 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
-        <path
-          fillRule="evenodd"
-          d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z"
-          clipRule="evenodd"
-        />
-      </svg>
-      <div>
-        <p className="text-sm font-medium text-gray-900">
-          Active Round: <span className="text-emerald-600">{currentRound}</span>
-        </p>
-        <p className="text-xs text-gray-500 mt-1">
-          Students shown in the table below are eligible for this round. Use the bulk actions above to promote or reject.
-        </p>
-      </div>
-    </div>
-  </div>
-</div>
-        {/* Button to open Customize Table Columns modal */}
-        <div className="flex justify-end mb-2">
-          <button
-            onClick={() => setShowColumnModal(true)}
-            className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors duration-200"
-          >
-            Customize Table Columns
-          </button>
-        </div>
+       </div>
+        {/* Recruitment Pipeline (moved below company details) */}
+        {/* Round Progress Bar */}
+        {job && job.rounds && job.rounds.length > 0 && (
+          <RoundProgressBar
+            rounds={job.rounds}
+            currentRoundIndex={currentRoundIndex}
+            onRoundClick={handleRoundClick}
+            applicantCounts={applicantCounts}
+          />
+        )}
+        
+        {/* Viewing Past Round Banner + Action Panel */}
+        {job && job.rounds && job.rounds.length > 0 && (
+          <>
+            {typeof job.currentRoundIndex === 'number' && currentRoundIndex < job.currentRoundIndex && (
+              <div className="flex items-center justify-between p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-800">
+                <div className="text-sm">
+                  <strong>Viewing Past Round:</strong> You are viewing {job.rounds[currentRoundIndex]?.name || job.rounds[currentRoundIndex]?.roundName || `Round ${currentRoundIndex + 1}`}.
+                </div>
+                <button onClick={goToCurrentRound} className="px-3 py-1.5 text-sm bg-amber-600 text-white rounded-md hover:bg-amber-700">
+                  Back to Current Round
+                </button>
+              </div>
+            )}
+            <RoundActionPanel
+              currentRound={job.rounds[currentRoundIndex]?.name || job.rounds[currentRoundIndex]?.roundName || `Round ${currentRoundIndex + 1}`}
+              selectedApplications={selectedApplications}
+              filteredApplications={filteredApplications}
+              onBulkAction={handleEnhancedBulkAction}
+              onSelectAll={handleSelectAllApplications}
+              onClearSelection={handleClearSelection}
+              isLoading={isRoundActionLoading}
+              isFinalRound={currentRoundIndex >= job.rounds.length - 1}
+            />
+          </>
+        )}
+        {/* Removed old 'Customize Table Columns' button above filters */}
         {/* Enhanced Filters Section */}
         <div className="p-0 -mb-8">
+          {/* Search bar above all filters */}
+          <div className="mb-3">
+            <input
+              type="text"
+              placeholder="🔍 Search by name or roll number"
+              value={filters.searchTerm}
+              onChange={(e) => setFilters({ ...filters, searchTerm: e.target.value })}
+              className="w-full p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            />
+          </div>
           {/* Filter controls and bulk action buttons */}
-          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
+            {/* Eligibility */}
             <select
               value={filters.eligibility}
-              onChange={(e) => setFilters({...filters, eligibility: e.target.value})}
+              onChange={(e) => setFilters({ ...filters, eligibility: e.target.value })}
               className="p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             >
               <option value="all">All Candidates</option>
               <option value="eligible">Eligible</option>
               <option value="not_eligible">Not Eligible</option>
             </select>
+            {/* Department dropdown */}
             <select
               value={filters.department}
-              onChange={(e) => setFilters({...filters, department: e.target.value})}
+              onChange={(e) => setFilters({ ...filters, department: e.target.value })}
               className="p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             >
               <option value="all">All Departments</option>
@@ -1857,30 +2297,65 @@ const JobApplications = () => {
               <option value="IT">IT</option>
               <option value="ECE">ECE</option>
             </select>
+            {/* Gender dropdown */}
+            <select
+              value={filters.gender}
+              onChange={(e) => setFilters({ ...filters, gender: e.target.value })}
+              className="p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            >
+              <option value="all">All Genders</option>
+              <option value="Male">Male</option>
+              <option value="Female">Female</option>
+              <option value="Other">Other</option>
+              <option value="N/A">Not Specified</option>
+            </select>
+            {/* CGPA min */}
             <input
               type="number"
               placeholder="Min CGPA"
-              value={filters.cgpa}
-              onChange={(e) => setFilters({...filters, cgpa: e.target.value})}
+              value={filters.cgpaMin}
+              onChange={(e) => setFilters({ ...filters, cgpaMin: e.target.value })}
               className="p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             />
+            {/* Current arrears max */}
             <input
-              type="text"
-              placeholder="🔍 Search by name/roll number"
-              value={filters.searchTerm}
-              onChange={(e) => setFilters({...filters, searchTerm: e.target.value})}
+              type="number"
+              placeholder="Max Current Arrears"
+              value={filters.currentArrearsMax}
+              onChange={(e) => setFilters({ ...filters, currentArrearsMax: e.target.value })}
               className="p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             />
-            <select
-              value={filters.roundStatus}
-              onChange={e => setFilters({ ...filters, roundStatus: e.target.value })}
+            {/* History arrears max */}
+            <input
+              type="number"
+              placeholder="Max History Arrears"
+              value={filters.historyArrearsMax}
+              onChange={(e) => setFilters({ ...filters, historyArrearsMax: e.target.value })}
               className="p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-            >
-              <option value="all">All Statuses</option>
-              <option value="shortlisted">Shortlisted</option>
-              <option value="rejected">Rejected</option>
-              <option value="pending">Pending</option>
-            </select>
+            />
+            {/* Status filter with pen icon on the right */}
+            <div className="flex items-center gap-2 md:col-span-2">
+              <select
+                value={filters.roundStatus}
+                onChange={e => setFilters({ ...filters, roundStatus: e.target.value })}
+                className="flex-1 p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="all">All Statuses</option>
+                <option value="shortlisted">Shortlisted</option>
+                <option value="rejected">Rejected</option>
+                <option value="pending">Pending</option>
+              </select>
+              <button
+                onClick={() => { setPageSizeInput(applicationsPerPage); setShowColumnModal(true); }}
+                title="Customize Columns"
+                className="p-2 rounded-full bg-gray-100 hover:bg-gray-200 border border-gray-300 shadow-sm transition-colors duration-200"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4 text-gray-600">
+                  <path d="M15.502 1.94a1.5 1.5 0 0 1 2.121 2.12l-1.06 1.062-2.122-2.12 1.06-1.062z"/>
+                  <path d="M14.09 4.353 4.5 13.94V16.5h2.56l9.59-9.588-2.56-2.56z"/>
+                </svg>
+              </button>
+            </div>
             {/* Dynamic question filters */}
             {job && Array.isArray(job.screeningQuestions) && visibleColumns.filter(col => col.startsWith('q')).map(col => {
               const idx = parseInt(col.replace('q', '')) - 1;
@@ -1950,6 +2425,7 @@ const JobApplications = () => {
           visibleColumns={visibleColumns} // Pass visible columns
           currentRound={currentRound} // Pass currentRound
           screeningQuestions={job?.screeningQuestions || []}
+          serialOffset={indexOfFirstApp}
         />
         {/* Job Activity Logs */}
         <JobLogs jobId={jobId} />
@@ -1984,39 +2460,99 @@ const JobApplications = () => {
             statusConfig={roundStatusConfig}
           />
         )}
-        {/* Column Selector Modal */}
+        {/* Customize Columns Modal with Applications per page */}
         {showColumnModal && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
             <div className="bg-white rounded-lg shadow-md p-6 max-w-md w-full">
               <div className="flex justify-between items-center mb-4">
                 <h3 className="font-bold text-lg">Customize Table Columns</h3>
-                <button onClick={() => setShowColumnModal(false)} className="text-gray-500 hover:text-gray-700">
+                <button
+                  onClick={() => setShowColumnModal(false)}
+                  className="text-gray-500 hover:text-gray-700"
+                >
                   ×
                 </button>
               </div>
-              <div className="flex flex-wrap gap-2">
-                {allPossibleColumns.map(col => {
-                  let label = col.charAt(0).toUpperCase() + col.slice(1).replace(/([A-Z])/g, ' $1');
-                  if (col.startsWith('q') && job?.screeningQuestions) {
-                    const idx = parseInt(col.replace('q', '')) - 1;
-                    const q = job.screeningQuestions[idx];
-                    if (q) label = q.question ? `Q${idx + 1}: ${q.question}` : `Q${idx + 1}`;
-                  }
-                  return (
-                    <label key={col} className="flex items-center">
-                      <input
-                        type="checkbox"
-                        checked={visibleColumns.includes(col)}
-                        onChange={() => {
-                          setVisibleColumns(prev =>
-                            prev.includes(col) ? prev.filter(c => c !== col) : [...prev, col]
-                          );
-                        }}
-                      />
-                      {label}
-                    </label>
-                  );
-                })}
+              <div className="space-y-5">
+                {/* Applications per page */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Applications per page
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={500}
+                    value={pageSizeInput}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val === '') { setPageSizeInput(''); return; }
+                      const n = parseInt(val, 10);
+                      if (!isNaN(n)) setPageSizeInput(n);
+                    }}
+                    onBlur={() => {
+                      let n = parseInt(pageSizeInput, 10);
+                      if (isNaN(n) || n < 1) n = 1;
+                      if (n > 500) n = 500;
+                      setPageSizeInput(n);
+                    }}
+                    className="w-32 p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                  <p className="mt-1 text-xs text-gray-500">Default is 25. Range 1–500.</p>
+                </div>
+
+                {/* Column checkboxes */}
+                <div>
+                  <div className="text-sm font-medium text-gray-700 mb-2">Columns</div>
+                  <div className="flex flex-wrap gap-3 max-h-64 overflow-auto pr-1">
+                    {orderedModalColumns.map(col => {
+                      let label = col.charAt(0).toUpperCase() + col.slice(1).replace(/([A-Z])/g, ' $1');
+                      if ((/^q\d+$/i.test(col) || /^question\d+$/i.test(col)) && job?.screeningQuestions) {
+                        const idx = parseInt(col.replace(/^[a-zA-Z]+/, ''), 10) - 1;
+                        const q = job.screeningQuestions[idx];
+                        if (q) label = q.question ? `Q${idx + 1}: ${q.question}` : `Q${idx + 1}`;
+                      }
+                      return (
+                        <label key={col} className="flex items-center gap-2 text-sm">
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4"
+                            checked={visibleColumns.includes(col)}
+                            onChange={() => {
+                              setVisibleColumns(prev =>
+                                prev.includes(col) ? prev.filter(c => c !== col) : [...prev, col]
+                              );
+                            }}
+                          />
+                          <span>{label}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Actions */}
+                <div className="flex justify-end gap-2 pt-1">
+                  <button
+                    onClick={() => setShowColumnModal(false)}
+                    className="px-4 py-2 rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => {
+                      let n = parseInt(pageSizeInput, 10);
+                      if (isNaN(n) || n < 1) n = 1;
+                      if (n > 500) n = 500;
+                      setApplicationsPerPage(n);
+                      setCurrentPage(1);
+                      setShowColumnModal(false);
+                    }}
+                    className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+                  >
+                    Save
+                  </button>
+                </div>
               </div>
             </div>
           </div>

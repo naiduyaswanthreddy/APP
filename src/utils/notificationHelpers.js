@@ -1,4 +1,4 @@
-import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, addDoc, serverTimestamp, setDoc, doc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { sendEmailNotification, getStudentEmail, getStudentEmailByRoll } from './emailHelpers';
 import { getRollNumberByUid, isValidRollNumber } from './studentIdentity';
@@ -121,7 +121,11 @@ export const createEventNotification = async (studentId, title, message, actionL
 };
 
 export const createJobPostingNotification = async (studentId, jobData, sendEmail = true) => {
-  return createNotification({
+  // Use idempotent write with deterministic ID to prevent duplicates
+  const recipientKey = isValidRollNumber(studentId) ? studentId : (await getRollNumberByUid(studentId)) || studentId;
+  const deterministicId = `${recipientKey}_${jobData.id || jobData.jobId}_job_posting`;
+  
+  const notificationData = {
     title: `New Job Posting: ${jobData.position} at ${jobData.company}`,
     message: `A new job opportunity matching your skills is available. Salary: ${jobData.salary || 'Not specified'}`,
     type: 'job_posting',
@@ -130,8 +134,42 @@ export const createJobPostingNotification = async (studentId, jobData, sendEmail
     isGeneral: false,
     recipientType: 'student',
     actionLink: `/student/jobpost`,
-    job: jobData
-  }, sendEmail);
+    job: jobData,
+    uniqueKey: deterministicId, // For debugging
+    isRead: false,
+    timestamp: serverTimestamp()
+  };
+
+  try {
+    // Use setDoc with deterministic ID to ensure idempotency
+    await setDoc(doc(db, 'notifications', deterministicId), notificationData);
+    
+    // Send email notification if requested
+    if (sendEmail && (notificationData.recipientRoll || notificationData.recipientId)) {
+      try {
+        let studentEmail = null;
+        if (notificationData.recipientRoll && isValidRollNumber(notificationData.recipientRoll)) {
+          studentEmail = await getStudentEmailByRoll(notificationData.recipientRoll);
+        }
+        if (!studentEmail && notificationData.recipientId) {
+          studentEmail = await getStudentEmail(notificationData.recipientId);
+        }
+        if (studentEmail) {
+          await sendEmailNotification(studentEmail, 'announcement', {
+            studentName: notificationData.recipientName || 'Student',
+            ...notificationData
+          });
+        }
+      } catch (emailError) {
+        console.error('Error sending email notification:', emailError);
+      }
+    }
+    
+    return deterministicId;
+  } catch (error) {
+    console.error('Error creating job posting notification:', error);
+    throw error;
+  }
 };
 
 export const createStatusUpdateNotification = async (studentId, applicationData, sendEmail = true) => {
@@ -248,16 +286,187 @@ export const createSystemAlertNotification = async (title, message, actionLink =
 };
 
 export const createChatMessageNotification = async (recipientId, jobData, senderName, message, sendEmail = false) => {
-  return createNotification({
+  // Use idempotent write for chat messages
+  const recipientKey = isValidRollNumber(recipientId) ? recipientId : (await getRollNumberByUid(recipientId)) || recipientId;
+  const messageHash = message.substring(0, 20).replace(/[^a-zA-Z0-9]/g, '');
+  const deterministicId = `${recipientKey}_${jobData.id}_chat_${Date.now()}_${messageHash}`;
+  
+  const notificationData = {
     title: `New message in ${jobData.position} chat`,
     message: `${senderName}: ${message.length > 50 ? message.substring(0, 50) + '...' : message}`,
     type: 'chat_message',
-    recipientId: recipientId,
+    recipientId: isValidRollNumber(recipientId) ? null : recipientId,
+    recipientRoll: isValidRollNumber(recipientId) ? recipientId : (await getRollNumberByUid(recipientId)) || null,
     isGeneral: false,
     recipientType: 'student',
     actionLink: `/student/jobpost`,
     job: jobData,
     senderName,
-    message
-  }, sendEmail);
+    originalMessage: message,
+    uniqueKey: deterministicId,
+    isRead: false,
+    timestamp: serverTimestamp()
+  };
+
+  try {
+    await setDoc(doc(db, 'notifications', deterministicId), notificationData);
+    
+    if (sendEmail && (notificationData.recipientRoll || notificationData.recipientId)) {
+      try {
+        let studentEmail = null;
+        if (notificationData.recipientRoll && isValidRollNumber(notificationData.recipientRoll)) {
+          studentEmail = await getStudentEmailByRoll(notificationData.recipientRoll);
+        }
+        if (!studentEmail && notificationData.recipientId) {
+          studentEmail = await getStudentEmail(notificationData.recipientId);
+        }
+        if (studentEmail) {
+          await sendEmailNotification(studentEmail, 'announcement', {
+            studentName: notificationData.recipientName || 'Student',
+            ...notificationData
+          });
+        }
+      } catch (emailError) {
+        console.error('Error sending email notification:', emailError);
+      }
+    }
+    
+    return deterministicId;
+  } catch (error) {
+    console.error('Error creating chat message notification:', error);
+    throw error;
+  }
+};
+
+// New notification types
+export const createJobUpdateNotification = async (studentId, jobData, updateType, sendEmail = true) => {
+  const recipientKey = isValidRollNumber(studentId) ? studentId : (await getRollNumberByUid(studentId)) || studentId;
+  const deterministicId = `${recipientKey}_${jobData.id}_job_update_${updateType}`;
+  
+  const updateMessages = {
+    deadline: 'The application deadline has been updated.',
+    eligibility: 'The eligibility criteria have been updated.',
+    interview: 'Interview details have been updated.',
+    status: 'The job status has been updated.',
+    general: 'Job details have been updated.'
+  };
+  
+  const notificationData = {
+    title: `Job Updated: ${jobData.position} at ${jobData.company}`,
+    message: updateMessages[updateType] || updateMessages.general,
+    type: 'job_update',
+    recipientId: isValidRollNumber(studentId) ? null : studentId,
+    recipientRoll: isValidRollNumber(studentId) ? studentId : (await getRollNumberByUid(studentId)) || null,
+    isGeneral: false,
+    recipientType: 'student',
+    actionLink: `/student/jobpost`,
+    job: jobData,
+    updateType,
+    uniqueKey: deterministicId,
+    isRead: false,
+    timestamp: serverTimestamp()
+  };
+
+  try {
+    await setDoc(doc(db, 'notifications', deterministicId), notificationData);
+    
+    if (sendEmail && (notificationData.recipientRoll || notificationData.recipientId)) {
+      try {
+        let studentEmail = null;
+        if (notificationData.recipientRoll && isValidRollNumber(notificationData.recipientRoll)) {
+          studentEmail = await getStudentEmailByRoll(notificationData.recipientRoll);
+        }
+        if (!studentEmail && notificationData.recipientId) {
+          studentEmail = await getStudentEmail(notificationData.recipientId);
+        }
+        if (studentEmail) {
+          await sendEmailNotification(studentEmail, 'announcement', {
+            studentName: notificationData.recipientName || 'Student',
+            ...notificationData
+          });
+        }
+      } catch (emailError) {
+        console.error('Error sending email notification:', emailError);
+      }
+    }
+    
+    return deterministicId;
+  } catch (error) {
+    console.error('Error creating job update notification:', error);
+    throw error;
+  }
+};
+
+export const createTaskAddedNotification = async (studentId, taskData, sendEmail = true) => {
+  const recipientKey = isValidRollNumber(studentId) ? studentId : (await getRollNumberByUid(studentId)) || studentId;
+  const deterministicId = `${recipientKey}_${taskData.id}_task_added`;
+  
+  const notificationData = {
+    title: `New Task: ${taskData.title || 'Task Added'}`,
+    message: `A new task has been assigned to you. ${taskData.description ? taskData.description.substring(0, 100) + '...' : ''}`,
+    type: 'task_added',
+    recipientId: isValidRollNumber(studentId) ? null : studentId,
+    recipientRoll: isValidRollNumber(studentId) ? studentId : (await getRollNumberByUid(studentId)) || null,
+    isGeneral: false,
+    recipientType: 'student',
+    actionLink: `/student/tasks`,
+    task: taskData,
+    uniqueKey: deterministicId,
+    isRead: false,
+    timestamp: serverTimestamp()
+  };
+
+  try {
+    await setDoc(doc(db, 'notifications', deterministicId), notificationData);
+    
+    if (sendEmail && (notificationData.recipientRoll || notificationData.recipientId)) {
+      try {
+        let studentEmail = null;
+        if (notificationData.recipientRoll && isValidRollNumber(notificationData.recipientRoll)) {
+          studentEmail = await getStudentEmailByRoll(notificationData.recipientRoll);
+        }
+        if (!studentEmail && notificationData.recipientId) {
+          studentEmail = await getStudentEmail(notificationData.recipientId);
+        }
+        if (studentEmail) {
+          await sendEmailNotification(studentEmail, 'deadline_reminder', {
+            studentName: notificationData.recipientName || 'Student',
+            ...notificationData
+          });
+        }
+      } catch (emailError) {
+        console.error('Error sending email notification:', emailError);
+      }
+    }
+    
+    return deterministicId;
+  } catch (error) {
+    console.error('Error creating task added notification:', error);
+    throw error;
+  }
+};
+
+export const createGalleryUpdateNotification = async (title, message, actionLink = null, sendEmail = false) => {
+  const deterministicId = `gallery_update_${Date.now()}`;
+  
+  const notificationData = {
+    title,
+    message,
+    type: 'gallery_update',
+    recipientId: null,
+    isGeneral: true,
+    recipientType: 'student',
+    actionLink: actionLink || '/student/gallery',
+    uniqueKey: deterministicId,
+    isRead: false,
+    timestamp: serverTimestamp()
+  };
+
+  try {
+    await setDoc(doc(db, 'notifications', deterministicId), notificationData);
+    return deterministicId;
+  } catch (error) {
+    console.error('Error creating gallery update notification:', error);
+    throw error;
+  }
 };

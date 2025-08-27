@@ -1,0 +1,185 @@
+{
+  "meta": {
+    "project": "Campus Placement Management System",
+    "date": "2025-08-17",
+    "prepared_by": "Product + Engineering"
+  },
+  "product_overview": "The Campus Placement Management System is a web application that streamlines the entire campus recruitment process by connecting Students, Admins (Training & Placement office), and Companies. It centralizes job postings, applications, assessments, interviews, and placement outcomes, with real-time updates, role-based access control, analytics dashboards, notifications, and resource management optimized for a mobile-responsive web platform.",
+  "core_goals": [
+    "Increase placement process efficiency and transparency through digitization.",
+    "Provide reliable, multi-channel communications including push and email notifications.",
+    "Enable data-driven decision-making with comprehensive analytics dashboards for admins.",
+    "Ensure secure role-based access control for students, admins, and companies to protect data and actions.",
+    "Reduce manual coordination efforts by automating notifications and application management."
+  ],
+  "key_features": [
+    "Firebase-based Authentication System with roles: student, admin, and company.",
+    "Student Profile Management including academic details, skills, documents, and profile completeness tracking.",
+    "Job Posting System with detailed eligibility criteria and real-time notifications to eligible students.",
+    "Application management workflow with statuses, bulk actions, and resume attachment handling.",
+    "Scheduling and Event Management for placement rounds with reminders and notifications.",
+    "Push notifications via Firebase Cloud Messaging and transactional emails via SendGrid.",
+    "Admin Analytics Dashboard using Chart.js for placement trends and reporting.",
+    "Resource Library and Announcements for guides, policies, and prep materials.",
+    "Gallery for uploading and displaying placement event photos.",
+    "Company Portal for posting jobs, reviewing candidates, and providing outcome feedback."
+  ],
+  "user_flow_summary": [
+    "Student flow: Sign up/login, complete profile, upload resume, browse and apply for eligible jobs, track application status, receive notifications, and attend scheduled events.",
+    "Admin flow: Login, create and publish jobs with eligibility rules, monitor and manage applications, shortlist or reject candidates, schedule interview rounds, send communications, and analyze placement data.",
+    "Company flow: Login, post or clone job listings, view and filter applicants, and share selection outcomes."
+  ],
+  "validation_criteria": [
+    "Role-based access controls enforced and verified for each user type (student, admin, company).",
+    "Successful authentication and session management with Firebase Auth including password reset and verification.",
+    "Students can create, complete, and update profiles with document uploads stored securely in Firebase Storage.",
+    "Jobs can be posted with eligibility criteria, published, and trigger notifications to appropriate students.",
+    "Students can apply for jobs with resume attachment and track application status updates reliably.",
+    "Events and scheduling flow functions correctly with notifications for upcoming rounds.",
+    "Push and email notifications deliver with >95% success rate for critical events.",
+    "Admin dashboards display real-time analytics with accurate data visualizations and export options.",
+    "All UI components are responsive and accessible to meet WCAG AA standards.",
+    "Security and privacy policies adhered to with consent mechanisms and Firestore rules.",
+    "System performance meets p95 page load <2.5s on 4G network conditions."
+  ],
+  "code_summary": {
+    "tech_stack": [
+      "JavaScript",
+      "React.js 18.2.0",
+      "Firebase 9.23.0",
+      "Node.js",
+      "Firestore NoSQL",
+      "Material-UI 7.3.1",
+      "Tailwind CSS",
+      "Chart.js",
+      "SendGrid",
+      "Firebase Functions",
+      "Firebase Auth",
+      "Firebase Storage",
+      "Firebase Cloud Messaging"
+    ],
+    "features": [
+      {
+        "name": "Authentication System",
+        "description": "Firebase-based authentication with role-based access control for students, admins, and companies",
+        "files": [
+          "src/AuthHandler.js",
+          "src/App.js",
+          "src/context/ThemeContext.js"
+        ]
+      },
+      {
+        "name": "Admin Dashboard",
+        "description": "Comprehensive admin panel with analytics, job posting, student management, and company relations",
+        "files": [
+          "src/components/admin/useAnalyticsData.js",
+          "src/components/admin/JobPost.js",
+          "src/components/admin/CompaniesFixed.js",
+          "src/components/admin/CompaniesNew.js",
+          "src/components/admin/Companies.js"
+        ]
+      },
+      {
+        "name": "Student Management",
+        "description": "Student profile management, academic tracking, job applications, and progress monitoring",
+        "files": [
+          "src/components/student/"
+        ]
+      },
+      {
+        "name": "Job Posting System",
+        "description": "Job creation, posting, application management, and eligibility criteria handling",
+        "files": [
+          "src/components/admin/JobPost.js"
+        ]
+      },
+      {
+        "name": "Company Management",
+        "description": "Company registration, profile management, and job posting capabilities",
+        "files": [
+          "src/components/admin/Companies.js",
+          "src/components/admin/CompaniesFixed.js",
+          "src/components/admin/CompaniesNew.js"
+        ]
+      },
+      {
+        "name": "Analytics Dashboard",
+        "description": "Real-time analytics and reporting with Chart.js visualization for placement statistics",
+        "files": [
+          "src/components/admin/useAnalyticsData.js"
+        ]
+      },
+      {
+        "name": "Notification System",
+        "description": "Push notifications via Firebase Cloud Messaging and email notifications via SendGrid",
+        "files": [
+          "functions/index.js",
+          "public/firebase-messaging-sw.js"
+        ]
+      },
+      {
+        "name": "Firebase Functions Backend",
+        "description": "Serverless backend functions for notifications, email handling, and data processing",
+        "files": [
+          "functions/index.js",
+          "functions/package.json"
+        ]
+      },
+      {
+        "name": "Performance Monitoring",
+        "description": "Application performance tracking and optimization utilities",
+        "files": [
+          "src/utils/performanceMonitor.js"
+        ]
+      },
+      {
+        "name": "Error Handling",
+        "description": "Global error boundary and error handling mechanisms",
+        "files": [
+          "src/utils/errorHandler.js"
+        ]
+      },
+      {
+        "name": "API Caching",
+        "description": "Custom hooks for API response caching and Firebase query optimization",
+        "files": [
+          "src/hooks/useApiCache.js",
+          "src/hooks/useFirebaseQuery.js"
+        ]
+      },
+      {
+        "name": "Responsive Design",
+        "description": "Mobile-responsive CSS and Tailwind configuration for cross-device compatibility",
+        "files": [
+          "src/styles/mobile-responsive.css",
+          "tailwind.config.js"
+        ]
+      },
+      {
+        "name": "Common Components",
+        "description": "Reusable UI components and utilities shared across the application",
+        "files": [
+          "src/components/common/",
+          "src/loading.js"
+        ]
+      },
+      {
+        "name": "Firebase Configuration",
+        "description": "Firebase project setup, security rules, and deployment configuration",
+        "files": [
+          "firebase.json",
+          ".firebaserc",
+          "public/firebase-messaging-sw.js"
+        ]
+      },
+      {
+        "name": "Build System",
+        "description": "Webpack configuration and build optimization for production deployment",
+        "files": [
+          "webpack.config.js",
+          "package.json"
+        ]
+      }
+    ]
+  }
+}

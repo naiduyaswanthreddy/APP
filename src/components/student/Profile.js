@@ -1,8 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { auth, db } from "../../firebase";
 import { doc, getDoc, setDoc, updateDoc, serverTimestamp, collection, addDoc } from "firebase/firestore";
-import { ToastContainer, toast } from "react-toastify";
-import "react-toastify/dist/ReactToastify.css";
+import { toast } from "react-toastify";
 import { useNavigate, Link } from "react-router-dom";
 import { 
   User, 
@@ -11,6 +10,7 @@ import {
   Book, 
   Download,
   Settings,
+  FileText,
 } from "lucide-react";
 import LoadingSpinner from '../ui/LoadingSpinner';
 import { createSystemAlertNotification, createCompanyActionNotification } from '../../utils/notificationHelpers';
@@ -18,6 +18,7 @@ import { createSystemAlertNotification, createCompanyActionNotification } from '
 // Import the individual profile components
 import ProfileBasic from "./ProfileBasic";
 import ProfileAcademics from "./ProfileAcademics";
+import ProfileResumes from "./ProfileResumes";
 import ProfileCareer from "./ProfileCareer";
 import ProfileExcellence from "./ProfileExcellence";
 import PushNotificationSettings from "./PushNotificationSettings";
@@ -180,7 +181,6 @@ const Profile = () => {
 
   return (
     <div className="container mx-auto sm:px-4 py-6 max-w-6xl">
-      <ToastContainer position="top-right" autoClose={3000} />
       
       {/* Profile Header with Completion Percentage */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-6 bg-white p-4 rounded-lg shadow">
@@ -194,7 +194,7 @@ const Profile = () => {
           </div>
         </div>
         
-        <div className="flex flex-col sm:flex-row items-center gap-3">
+        <div className="flex flex-row items-center gap-3">
           {/* Profile Completion */}
           <div className="flex items-center bg-gray-100 px-3 py-2 rounded-lg">
             <div className="mr-2">
@@ -233,6 +233,16 @@ const Profile = () => {
             <span>Basic</span>
           </button>
           
+          <button
+            onClick={() => setActiveTab("resumes")}
+            className={`flex items-center px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
+              activeTab === "resumes" ? "bg-white text-indigo-600 border-t border-l border-r border-indigo-500 -mb-px" : "text-gray-500 hover:text-gray-700 hover:bg-gray-50"
+            }`}
+          >
+            <FileText size={16} className="mr-2" />
+            <span>Resumes</span>
+          </button>
+
           <button
             onClick={() => setActiveTab("academics")}
             className={`flex items-center px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
@@ -276,7 +286,7 @@ const Profile = () => {
       </div>
       
       {/* Profile Content */}
-      <div className={`bg-white rounded-lg shadow overflow-hidden p-6 ${activeTab === "basic" ? "border border-blue-500" : ""} ${activeTab === "academics" ? "border border-green-500" : ""} ${activeTab === "career" ? "border border-yellow-500" : ""} ${activeTab === "excellence" ? "border border-red-500" : ""} ${activeTab === "settings" ? "border border-purple-500" : ""}`}>
+      <div className={`bg-white rounded-lg shadow overflow-hidden p-6 ${activeTab === "basic" ? "border border-blue-500" : ""} ${activeTab === "resumes" ? "border border-indigo-500" : ""} ${activeTab === "academics" ? "border border-green-500" : ""} ${activeTab === "career" ? "border border-yellow-500" : ""} ${activeTab === "excellence" ? "border border-red-500" : ""} ${activeTab === "settings" ? "border border-purple-500" : ""}`}>
         {/* Basic Info Tab */}
         {activeTab === "basic" && (
           <div>
@@ -288,6 +298,13 @@ const Profile = () => {
         {activeTab === "academics" && (
           <div>
             <ProfileAcademics userData={userData || {}} onUserDataChange={setUserData} />
+          </div>
+        )}
+
+        {/* Resumes Tab */}
+        {activeTab === "resumes" && (
+          <div>
+            <ProfileResumes />
           </div>
         )}
         
@@ -323,6 +340,14 @@ const Profile = () => {
           <span className="text-xs mt-1">Basic</span>
         </button>
         
+        <button
+          onClick={() => setActiveTab("resumes")}
+          className={`flex flex-col items-center p-2 ${activeTab === "resumes" ? "text-indigo-600" : "text-gray-500"}`}
+        >
+          <FileText size={20} />
+          <span className="text-xs mt-1">Resumes</span>
+        </button>
+
         <button
           onClick={() => setActiveTab("academics")}
           className={`flex flex-col items-center p-2 ${activeTab === "academics" ? "text-green-600" : "text-gray-500"}`}

@@ -1,13 +1,16 @@
 import { signOut } from "firebase/auth";
 import { auth } from "../../firebase";
-import React, { useState, useEffect } from 'react';
-import { useNavigate, useLocation, Outlet } from 'react-router-dom';
+import React, { useState, useEffect, useContext } from 'react';
+import { useNavigate, useLocation, Outlet, Link } from 'react-router-dom';
 import MobileHeader from './MobileHeader';
 import MobileSidebar from './MobileSidebar';
 import MobileBottomNav from './MobileBottomNav';
+import { Sun, Moon, LogOut, Bell, BookOpen, Briefcase, FileText, Calendar, Code, User, Image } from 'lucide-react';
+import { ThemeContext } from '../../context/ThemeContext';
 
 const StudentMobileResponsive = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const { isDarkMode, toggleTheme } = useContext(ThemeContext);
   const [isMobile, setIsMobile] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
@@ -91,10 +94,9 @@ const StudentMobileResponsive = () => {
                   </div>
                 </div>
 
-                {/* Navigation Menu */}
+                {/* Navigation Menu (Notifications removed as per requirement) */}
                 <nav className="space-y-2">
                   {[
-                    { name: "Notifications", path: "/student/notifications", icon: Bell },
                     { name: "Resources", path: "/student/resources", icon: BookOpen },
                     { name: "Job Posting", path: "/student/jobpost", icon: Briefcase },
                     { name: "Applications", path: "/student/applications", icon: FileText },
@@ -123,13 +125,38 @@ const StudentMobileResponsive = () => {
                 </nav>
               </div>
             </div>
-            <button 
-              onClick={handleLogout}
-              className="w-full text-left px-4 py-2 rounded text-gray-300 hover:bg-white/10 flex items-center gap-3 mb-4"
-            >
-              <LogOut size={20} />
-              <span>Log Out</span>
-            </button>
+            <div className="px-2 pb-4 flex items-center justify-around">
+              <button
+                onClick={toggleTheme}
+                className="p-2 rounded-full text-white hover:bg-white/10"
+                aria-label={isDarkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+                title={isDarkMode ? 'Light mode' : 'Dark mode'}
+              >
+                {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
+              </button>
+              {/* Notifications bell moved next to logout with unread badge */}
+              <button
+                onClick={() => navigate('/student/notifications')}
+                className="relative p-2 rounded-full text-white hover:bg-white/10"
+                aria-label="Notifications"
+                title="Notifications"
+              >
+                <Bell size={20} />
+                {unreadCount > 0 && (
+                  <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs w-4 h-4 flex items-center justify-center rounded-full">
+                    {unreadCount > 9 ? '9+' : unreadCount}
+                  </span>
+                )}
+              </button>
+              <button
+                onClick={handleLogout}
+                className="p-2 rounded-full text-white hover:bg-white/10"
+                aria-label="Log out"
+                title="Log out"
+              >
+                <LogOut size={20} />
+              </button>
+            </div>
           </div>
         </div>
 
@@ -156,6 +183,7 @@ const StudentMobileResponsive = () => {
         onClose={() => setIsSidebarOpen(false)}
         userData={userData}
         unreadCount={unreadCount}
+        onLogout={handleLogout}
       />
       
       {/* Main Content */}

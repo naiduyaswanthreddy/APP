@@ -1,0 +1,15 @@
+{
+  "status": "commited",
+  "type": "frontend",
+  "scope": "codebase",
+  "localEndpoint": "http://localhost:3000",
+  "executionArgs": {
+    "projectName": "APP-main",
+    "projectPath": "d:\\Placemet Portal\\APP-main",
+    "testIds": [],
+    "additionalInstruction": "Focus on testing the core placement management features including authentication, job posting, student management, admin dashboard, notification system, and Firebase integration. Test both frontend UI components and backend Firebase functions.",
+    "envs": {
+      "API_KEY": "sk-user-DtShP-Vrb87_x0MEpxO1ZKFBetjz4op8DHNYqb1a7ugj1e3eIdyNIXpkB8WQxvg0G0uf3WFku1xaaGw9Cq7mm04e2uC2Oliy8O7-jeuwR7ZjhHfXpWa2-BLPFLV8EOb0-lk"
+    }
+  }
+}

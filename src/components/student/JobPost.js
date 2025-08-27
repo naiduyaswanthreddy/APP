@@ -1,9 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { collection, getDocs, query, orderBy, addDoc, doc, getDoc, where, serverTimestamp, updateDoc } from 'firebase/firestore';
+import { collection, getDocs, query, orderBy, addDoc, doc, getDoc, where, serverTimestamp, updateDoc, runTransaction } from 'firebase/firestore';
 import { db, auth } from '../../firebase';
 import { getCurrentStudentRollNumber } from '../../utils/studentIdentity';
-import { ToastContainer, toast } from "react-toastify";
-import "react-toastify/dist/ReactToastify.css";
+import { toast } from "react-toastify";
 import { createJobPostingNotification } from '../../utils/notificationHelpers';
 import { MessageSquare } from 'lucide-react';
 import JobChat from './JobChat'; // Import the new JobChat component
@@ -27,6 +26,16 @@ const JobPost = () => {
   const [screeningAnswers, setScreeningAnswers] = useState({});
   const [loading, setLoading] = useState(true); // Add loading state
   const [showChatPanel, setShowChatPanel] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [jobsPerPage] = useState(20);
+  const [applying, setApplying] = useState(false);
+  const [filters, setFilters] = useState({
+    jobType: 'all',
+    location: 'all',
+    company: 'all',
+    eligibility: 'all'
+  });
+  const [searchTerm, setSearchTerm] = useState('');
   // Remove these states:
   // const [hasJoinedChat, setHasJoinedChat] = useState(false);
   // const [showJoinChatModal, setShowJoinChatModal] = useState(false);
@@ -59,8 +68,12 @@ const JobPost = () => {
       // setShowJoinChatModal(false);
       setShowChatPanel(true);
       
-      // Create a notification for admins
-      await createJobPostingNotification((await getCurrentStudentRollNumber()) || auth.currentUser.uid, selectedJob);
+      // Create a notification for admins about student joining chat
+      await createJobEventNotification(
+        `Student joined discussion: ${selectedJob.position}`,
+        `A student has joined the discussion for ${selectedJob.position} at ${selectedJob.company}`,
+        `/admin/jobs/${selectedJob.id}`
+      );
       
       toast.success("You've joined the discussion!");
     } catch (error) {
@@ -121,32 +134,7 @@ const JobPost = () => {
       
       setJobs(jobsData);
       
-      // Check for any new jobs since last fetch
-      const lastFetchTime = localStorage.getItem('lastJobsFetchTime');
-      const user = auth.currentUser;
-      if (lastFetchTime && user) {
-        const lastFetchDate = new Date(parseInt(lastFetchTime, 10));
-        jobsData.forEach(job => {
-          // If the job was created after the last fetch, create a notification
-          if (job.created_at && new Date(job.created_at.seconds * 1000) > lastFetchDate) {
-            // Check if the job matches student's skills or criteria
-            const studentSkills = studentProfile.skills || [];
-            const jobSkills = job.eligibilityCriteria?.skills || [];
-            
-            // Simple matching algorithm - if any skill matches
-            const hasMatchingSkill = jobSkills.some(skill => 
-              studentSkills.map(s => s.toLowerCase()).includes(skill.toLowerCase())
-            );
-            
-            if (hasMatchingSkill) {
-              createJobPostingNotification(user.uid, job);
-            }
-          }
-        });
-      }
-      
-      // Update the last fetch time
-      localStorage.setItem('lastJobsFetchTime', Date.now().toString());
+      // Note: Job posting notifications are now handled centrally in JobCards.js to avoid duplicates
     } catch (error) {
       console.error('Error fetching jobs:', error);
       toast.error('Failed to fetch jobs');
@@ -284,47 +272,110 @@ const JobPost = () => {
     }));
   };
 
-  // Modify the handleApply function
+  // Modify the handleApply function with transactional creation and duplicate-prevention
   const handleApply = async (jobId) => {
     try {
       const user = auth.currentUser;
-      if (user) {
-        const roll = await getCurrentStudentRollNumber();
-        // Check if screening questions have been answered
-        if (selectedJob?.screeningQuestions?.length > 0) {
-          const unansweredQuestions = selectedJob.screeningQuestions.filter(
-            (_, index) => {
-              const ans = screeningAnswers[index];
-              return ans === undefined || ans === null || String(ans).trim() === '';
-            }
-          );
-          
-          if (unansweredQuestions.length > 0) {
-            toast.warning("Please answer all screening questions before applying.");
-            return;
-          }
+      if (!user) return;
+
+      // Check if student is frozen
+      try {
+        const studentDoc = await getDoc(doc(db, 'students', user.uid));
+        const studentData = studentDoc.data();
+        
+        if (studentData?.freezed?.active) {
+          toast.error('Your account is frozen. Contact the Placement Team for assistance.');
+          return;
         }
-        
-        // Create application with screening answers
-        await addDoc(collection(db, 'applications'), {
-          job_id: jobId,
-          student_id: user.uid,
-          student_rollNumber: roll || null,
-          status: 'pending',
-          applied_at: serverTimestamp(),
-          screening_answers: screeningAnswers // This will store the answers map
-        });
-        
-        setAppliedJobs([...appliedJobs, selectedJob.id]);
-        setScreeningAnswers({}); // Reset answers after submission
-        toast.success("Application submitted successfully!");
-        
-        // Return to job listing view
-        setSelectedJob(null);
+      } catch (error) {
+        console.error('Error checking freeze status:', error);
+        toast.error('Unable to verify account status. Please try again.');
+        return;
       }
+
+      // Guard: prevent duplicate rapid clicks
+      if (applying) return;
+      setApplying(true);
+
+      const roll = await getCurrentStudentRollNumber();
+      // Validate screening answers if required
+      if (selectedJob?.screeningQuestions?.length > 0) {
+        const unansweredQuestions = selectedJob.screeningQuestions.filter((_, index) => {
+          const ans = screeningAnswers[index];
+          return ans === undefined || ans === null || String(ans).trim() === '';
+        });
+        if (unansweredQuestions.length > 0) {
+          toast.warning('Please answer all screening questions before applying.');
+          return;
+        }
+      }
+
+      // Normalize screening answers keys to strings
+      const screeningAnswersToSave = (() => {
+        try {
+          const entries = Object.entries(screeningAnswers || {}).map(([k, v]) => [String(k), v]);
+          return Object.fromEntries(entries);
+        } catch (_) {
+          return screeningAnswers || {};
+        }
+      })();
+
+      const applicationData = {
+        jobId: jobId,
+        job_id: jobId, // backward compatibility
+        student_id: user.uid,
+        student_rollNumber: roll || null,
+        status: 'pending',
+        appliedAt: serverTimestamp(),
+        applied_at: serverTimestamp(), // backward compatibility
+        updatedAt: serverTimestamp(),
+        screening_answers: screeningAnswersToSave,
+        job: {
+          position: selectedJob.position,
+          company: selectedJob.company,
+          location: selectedJob.location,
+          ctc: selectedJob.ctc || '',
+          minCtc: selectedJob.minCtc || '',
+          maxCtc: selectedJob.maxCtc || '',
+          salary: selectedJob.salary || '',
+          minSalary: selectedJob.minSalary || '',
+          maxSalary: selectedJob.maxSalary || '',
+          basePay: selectedJob.basePay || '',
+          variablePay: selectedJob.variablePay || '',
+          bonuses: selectedJob.bonuses || '',
+          compensationType: selectedJob.compensationType || '',
+          ctcUnit: selectedJob.ctcUnit || '',
+          salaryUnit: selectedJob.salaryUnit || '',
+          jobTypes: selectedJob.jobTypes || '',
+          workMode: selectedJob.workMode || '',
+          internshipDuration: selectedJob.internshipDuration || '',
+          internshipDurationUnit: selectedJob.internshipDurationUnit || ''
+        }
+      };
+
+      // Transaction with deterministic document ID to avoid duplicates
+      const deterministicId = `${jobId}_${roll || user.uid}`;
+      await runTransaction(db, async (tx) => {
+        const appRef = doc(db, 'applications', deterministicId);
+        const snap = await tx.get(appRef);
+        if (snap.exists()) {
+          throw new Error('already_applied');
+        }
+        tx.set(appRef, applicationData);
+      });
+
+      setAppliedJobs((prev) => (prev.includes(selectedJob.id) ? prev : [...prev, selectedJob.id]));
+      setScreeningAnswers({});
+      toast.success('Application submitted successfully!');
+      setSelectedJob(null);
     } catch (error) {
-      console.error("Error submitting application:", error);
-      toast.error("Error submitting application!");
+      console.error('Error submitting application:', error);
+      const msg = String(error?.message || '').toLowerCase().includes('already')
+        ? 'You have already applied for this job'
+        : 'Error submitting application!';
+      toast.error(msg);
+    } finally {
+      setApplying(false);
     }
   };
 
@@ -531,20 +582,182 @@ const JobPost = () => {
     );
   };
 
+  // Filter and pagination logic
+  const getFilteredJobs = () => {
+    let filtered = jobs.filter(job => !viewSavedJobs || savedJobs.includes(job.id));
+    
+    // Apply search filter
+    if (searchTerm.trim()) {
+      const search = searchTerm.toLowerCase();
+      filtered = filtered.filter(job => 
+        job.position?.toLowerCase().includes(search) ||
+        job.company?.toLowerCase().includes(search) ||
+        job.location?.toLowerCase().includes(search) ||
+        job.skills?.some(skill => skill.toLowerCase().includes(search))
+      );
+    }
+    
+    // Apply filters
+    if (filters.jobType !== 'all') {
+      filtered = filtered.filter(job => 
+        job.jobTypes?.includes(filters.jobType)
+      );
+    }
+    
+    if (filters.location !== 'all') {
+      filtered = filtered.filter(job => 
+        job.location?.toLowerCase().includes(filters.location.toLowerCase())
+      );
+    }
+    
+    if (filters.company !== 'all') {
+      filtered = filtered.filter(job => 
+        job.company?.toLowerCase().includes(filters.company.toLowerCase())
+      );
+    }
+    
+    if (filters.eligibility !== 'all') {
+      if (filters.eligibility === 'eligible') {
+        filtered = filtered.filter(job => checkEligibility(job));
+      } else if (filters.eligibility === 'not_eligible') {
+        filtered = filtered.filter(job => !checkEligibility(job));
+      }
+    }
+    
+    return filtered;
+  };
+
+  const filteredJobs = getFilteredJobs();
+  const totalJobs = filteredJobs.length;
+  const indexOfLastJob = currentPage * jobsPerPage;
+  const indexOfFirstJob = indexOfLastJob - jobsPerPage;
+  const currentJobs = filteredJobs.slice(indexOfFirstJob, indexOfLastJob);
+  const totalPages = Math.ceil(totalJobs / jobsPerPage);
+
+  // Get unique values for filter dropdowns
+  const getUniqueJobTypes = () => {
+    const types = new Set();
+    jobs.forEach(job => {
+      if (job.jobTypes && Array.isArray(job.jobTypes)) {
+        job.jobTypes.forEach(type => types.add(type));
+      }
+    });
+    return Array.from(types);
+  };
+
+  const getUniqueLocations = () => {
+    const locations = new Set();
+    jobs.forEach(job => {
+      if (job.location) locations.add(job.location);
+    });
+    return Array.from(locations);
+  };
+
+  const getUniqueCompanies = () => {
+    const companies = new Set();
+    jobs.forEach(job => {
+      if (job.company) companies.add(job.company);
+    });
+    return Array.from(companies);
+  };
+
   // Remove the standalone JSX block and use the component in the return statement
   return (
     <div className="p-0 space-y-0">
-      <ToastContainer style={{ zIndex: 9999 }} />
       {!selectedJob ? (
         // Main job listing view
         <>
-          <div className="flex justify-end mb-4">
-            <button
-              onClick={() => setViewSavedJobs(!viewSavedJobs)}
-              className="px-4 py-2 bg-blue-100 text-gray-600 rounded hover:bg-blue-200"
-            >
-              {viewSavedJobs ? 'View All Jobs' : 'View Saved Jobs'}
-            </button>
+          {/* Search and Filters */}
+          <div className="mb-6 space-y-4">
+            <div className="flex flex-col md:flex-row gap-4">
+              <div className="flex-1">
+                <input
+                  type="text"
+                  placeholder="Search jobs by position, company, location, or skills..."
+                  value={searchTerm}
+                  onChange={(e) => {
+                    setSearchTerm(e.target.value);
+                    setCurrentPage(1); // Reset to first page on search
+                  }}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+              <button
+                onClick={() => setViewSavedJobs(!viewSavedJobs)}
+                className="px-4 py-2 bg-blue-100 text-gray-600 rounded hover:bg-blue-200 whitespace-nowrap"
+              >
+                {viewSavedJobs ? 'View All Jobs' : 'View Saved Jobs'}
+              </button>
+            </div>
+            
+            {/* Filter Controls */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <select
+                value={filters.jobType}
+                onChange={(e) => {
+                  setFilters(prev => ({ ...prev, jobType: e.target.value }));
+                  setCurrentPage(1);
+                }}
+                className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="all">All Job Types</option>
+                {getUniqueJobTypes().map(type => (
+                  <option key={type} value={type}>{type}</option>
+                ))}
+              </select>
+              
+              <select
+                value={filters.location}
+                onChange={(e) => {
+                  setFilters(prev => ({ ...prev, location: e.target.value }));
+                  setCurrentPage(1);
+                }}
+                className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="all">All Locations</option>
+                {getUniqueLocations().map(location => (
+                  <option key={location} value={location}>{location}</option>
+                ))}
+              </select>
+              
+              <select
+                value={filters.company}
+                onChange={(e) => {
+                  setFilters(prev => ({ ...prev, company: e.target.value }));
+                  setCurrentPage(1);
+                }}
+                className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="all">All Companies</option>
+                {getUniqueCompanies().map(company => (
+                  <option key={company} value={company}>{company}</option>
+                ))}
+              </select>
+              
+              <select
+                value={filters.eligibility}
+                onChange={(e) => {
+                  setFilters(prev => ({ ...prev, eligibility: e.target.value }));
+                  setCurrentPage(1);
+                }}
+                className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="all">All Jobs</option>
+                <option value="eligible">Eligible Only</option>
+                <option value="not_eligible">Not Eligible</option>
+              </select>
+            </div>
+            
+            {/* Jobs Count */}
+            <div className="flex justify-between items-center text-sm text-gray-600">
+              <span>
+                Showing {indexOfFirstJob + 1}-{Math.min(indexOfLastJob, totalJobs)} of {totalJobs} jobs
+                {searchTerm && ` (filtered from ${jobs.length} total)`}
+              </span>
+              {totalPages > 1 && (
+                <span>Page {currentPage} of {totalPages}</span>
+              )}
+            </div>
           </div>
 
           {loading ? (
@@ -553,11 +766,10 @@ const JobPost = () => {
     </div>
           ) : (
             <>
-              {jobs.filter(job => !viewSavedJobs || savedJobs.includes(job.id)).length > 0 ? (
+              {totalJobs > 0 ? (
+                <>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                  {jobs
-                    .filter(job => !viewSavedJobs || savedJobs.includes(job.id))
-                    .map(job => {
+                  {currentJobs.map(job => {
                       const isEligible = checkEligibility(job);
                       const isSaved = savedJobs.includes(job.id);
                       const isApplied = appliedJobs.includes(job.id);
@@ -656,6 +868,56 @@ const JobPost = () => {
                       );
                     })}
                 </div>
+                
+                {/* Pagination Controls */}
+                {totalPages > 1 && (
+                  <div className="flex justify-center items-center mt-8 space-x-2">
+                    <button
+                      onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+                      disabled={currentPage === 1}
+                      className="px-3 py-2 border border-gray-300 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
+                    >
+                      Previous
+                    </button>
+                    
+                    {/* Page Numbers */}
+                    {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                      let pageNum;
+                      if (totalPages <= 5) {
+                        pageNum = i + 1;
+                      } else if (currentPage <= 3) {
+                        pageNum = i + 1;
+                      } else if (currentPage >= totalPages - 2) {
+                        pageNum = totalPages - 4 + i;
+                      } else {
+                        pageNum = currentPage - 2 + i;
+                      }
+                      
+                      return (
+                        <button
+                          key={pageNum}
+                          onClick={() => setCurrentPage(pageNum)}
+                          className={`px-3 py-2 border rounded-lg ${
+                            currentPage === pageNum
+                              ? 'bg-blue-500 text-white border-blue-500'
+                              : 'border-gray-300 hover:bg-gray-50'
+                          }`}
+                        >
+                          {pageNum}
+                        </button>
+                      );
+                    })}
+                    
+                    <button
+                      onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+                      disabled={currentPage === totalPages}
+                      className="px-3 py-2 border border-gray-300 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
+                    >
+                      Next
+                    </button>
+                  </div>
+                )}
+                </>
               ) : (
                 <div className="flex flex-col items-center justify-center py-12 bg-gray-50 rounded-lg">
                   <svg className="w-16 h-16 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">

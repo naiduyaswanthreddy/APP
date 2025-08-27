@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useParams } from 'react-router-dom';
 import { collection, query, where, orderBy, getDocs, addDoc, serverTimestamp, onSnapshot, doc, updateDoc, getDoc } from 'firebase/firestore';
 import { db, auth } from '../../firebase';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import { Send, User, MessageSquare, Pin, Download, Filter, Search, X } from 'lucide-react';
-import { jsPDF } from 'jspdf';
+import jsPDF from 'jspdf';
 import { CSVLink } from 'react-csv';
 
 const AdminChat = ({ jobId: propJobId, onClose }) => {
@@ -45,6 +45,21 @@ const AdminChat = ({ jobId: propJobId, onClose }) => {
       }
     };
   }, [jobId]);
+
+  // Toggle between single-student chat and all chats
+  const handleViewModeChange = (mode) => {
+    if (!selectedJob) return;
+    const nextIsAll = mode === 'all';
+    setViewAllChats(nextIsAll);
+    if (nextIsAll) {
+      // Switching to All: clear selected student and load all messages
+      setSelectedStudent(null);
+      loadMessages(selectedJob.id, null);
+    } else {
+      // Switching to Single: keep current selected student if any
+      loadMessages(selectedJob.id, selectedStudent?.id || null);
+    }
+  };
 
   useEffect(() => {
     if (jobId && jobs.length > 0) {
@@ -310,10 +325,115 @@ const AdminChat = ({ jobId: propJobId, onClose }) => {
     student.rollNumber.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
+  const getFilteredMessages = () => {
+    let filtered = messages;
+    if (messageFilter === 'admin') {
+      filtered = filtered.filter(m => m.senderRole === 'admin');
+    } else if (messageFilter === 'student') {
+      filtered = filtered.filter(m => m.senderRole !== 'admin');
+    }
+    if (messageSearch.trim()) {
+      const term = messageSearch.toLowerCase();
+      filtered = filtered.filter(m =>
+        (m.message || '').toLowerCase().includes(term) ||
+        (m.senderName || '').toLowerCase().includes(term)
+      );
+    }
+    return filtered;
+  };
+
+  const exportToPDF = () => {
+    try {
+      const docPdf = new jsPDF();
+      const data = getFilteredMessages();
+      docPdf.setFontSize(14);
+      docPdf.text(`Job Chats Report${selectedJob ? ` - ${selectedJob.position} @ ${selectedJob.company}` : ''}`, 10, 15);
+      docPdf.setFontSize(10);
+      let y = 25;
+      if (data.length === 0) {
+        docPdf.text('No messages for current filters.', 10, y);
+      } else {
+        data.forEach((m, idx) => {
+          const timeStr = m.timestamp?.seconds ? new Date(m.timestamp.seconds * 1000).toLocaleString() : 'Pending';
+          const sender = m.senderRole === 'admin' ? 'Admin' : (m.senderName || 'Student');
+          const row = `${idx + 1}. [${timeStr}] ${sender}: ${m.message || ''}`;
+          const lines = docPdf.splitTextToSize(row, 180);
+          if (y + lines.length * 6 > 280) {
+            docPdf.addPage();
+            y = 20;
+          }
+          docPdf.text(lines, 10, y);
+          y += lines.length * 6 + 2;
+        });
+      }
+      docPdf.save('job-chats.pdf');
+    } catch (e) {
+      toast.error('Failed to export PDF');
+    }
+  };
+
+  const filteredMessages = useMemo(() => getFilteredMessages(), [messages, messageFilter, messageSearch]);
+  const csvData = useMemo(() => filteredMessages.map(m => ({
+    timestamp: m.timestamp?.seconds ? new Date(m.timestamp.seconds * 1000).toISOString() : '',
+    senderRole: m.senderRole || '',
+    senderName: m.senderName || '',
+    studentId: m.studentId || '',
+    message: m.message || ''
+  })), [filteredMessages]);
+
   return (
     <div className="p-4">
       <ToastContainer />
-      <h1 className="text-2xl font-bold mb-4">Job Application Chats</h1>
+      <div className="mb-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <h1 className="text-2xl font-bold">Job Application Chats</h1>
+        {selectedJob && (
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-2">
+              <Filter size={18} className="text-gray-500" />
+              <select
+                className="border rounded-md px-2 py-1 text-sm"
+                value={messageFilter}
+                onChange={(e) => setMessageFilter(e.target.value)}
+              >
+                <option value="all">All</option>
+                <option value="admin">Admin</option>
+                <option value="student">Students</option>
+              </select>
+            </div>
+            <div className="relative">
+              <Search size={16} className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input
+                className="pl-7 pr-7 py-1 border rounded-md text-sm w-56"
+                placeholder="Search messages..."
+                value={messageSearch}
+                onChange={(e) => setMessageSearch(e.target.value)}
+              />
+              {messageSearch && (
+                <button
+                  className="absolute right-1 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-gray-700"
+                  onClick={() => setMessageSearch('')}
+                  aria-label="Clear search"
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+            <button
+              onClick={exportToPDF}
+              className="inline-flex items-center gap-1 bg-white border px-2 py-1 rounded-md text-sm hover:bg-gray-50"
+            >
+              <Download size={16} /> PDF
+            </button>
+            <CSVLink
+              data={csvData}
+              filename={'job-chats.csv'}
+              className="inline-flex items-center gap-1 bg-white border px-2 py-1 rounded-md text-sm hover:bg-gray-50"
+            >
+              <Download size={16} /> CSV
+            </CSVLink>
+          </div>
+        )}
+      </div>
 
       {error && (
         <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
@@ -376,7 +496,18 @@ const AdminChat = ({ jobId: propJobId, onClose }) => {
                           </span>
                         )}
                       </div>
-                      <p className="text-sm text-gray-500">{student.rollNumber}</p>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <p className="text-sm text-gray-500">{student.rollNumber}</p>
+                        {(() => {
+                          const app = applications.find(a => a.studentId === student.id);
+                          if (!app?.status) return null;
+                          return (
+                            <span className={`text-xs px-2 py-0.5 rounded-full ${getStatusColor(app.status)}`}>
+                              {app.status}
+                            </span>
+                          );
+                        })()}
+                      </div>
                       <p className="text-xs text-gray-400 mt-1">
                         {jobs.find(j => j.id === student.jobId)?.position || 'Unknown Position'}
                       </p>
@@ -403,48 +534,53 @@ const AdminChat = ({ jobId: propJobId, onClose }) => {
                     </p>
                   </div>
                   <div className="flex items-center space-x-2">
-
-
-
-                        <div className="flex items-center">
-                          <label className="relative inline-flex items-center cursor-pointer">
-                            <input
-                              type="checkbox"
-                              className="sr-only peer"
-                              checked={viewAllChats}
-                              onChange={() => {
-                                setViewAllChats(!viewAllChats);
-                                loadMessages(selectedJob.id, viewAllChats ? selectedStudent?.id : null);
-                                if (viewAllChats && selectedStudent) {
-                                  setSelectedStudent(null);
-                                }
-                              }}
-                            />
-                            <div className="w-24 h-9 bg-gray-300 rounded-full peer peer-checked:bg-blue-600 transition-colors relative">
-                              {/* Sliding Knob */}
-                              <div className="absolute left-1 top-1 bg-white w-7 h-7 rounded-full shadow-md transition-all duration-300 peer-checked:left-[calc(100%-2rem)]" />
-                              {/* Labels */}
-                              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-medium text-gray-700 peer-checked:text-gray-300">
-                                Single
-                              </span>
-                              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-gray-300 peer-checked:text-white">
-                                All
-                              </span>
-                            </div>
-                          </label>
-                        </div>
-
+                    {/* Segmented control: Single | All */}
+                    <div className="inline-flex rounded-full border bg-white p-1">
+                      <button
+                        type="button"
+                        onClick={() => handleViewModeChange('single')}
+                        className={`px-3 py-1 text-sm rounded-full transition-colors ${!viewAllChats ? 'bg-blue-600 text-white' : 'text-gray-700 hover:bg-gray-100'}`}
+                        aria-pressed={!viewAllChats}
+                      >
+                        Single
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleViewModeChange('all')}
+                        className={`px-3 py-1 text-sm rounded-full transition-colors ${viewAllChats ? 'bg-blue-600 text-white' : 'text-gray-700 hover:bg-gray-100'}`}
+                        aria-pressed={viewAllChats}
+                      >
+                        All
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
               <div className="flex-1 overflow-y-auto p-4 bg-gray-100">
-                {messages.length === 0 ? (
+                {/* Pinned section */}
+                {pinnedMessages.length > 0 && (
+                  <div className="mb-4">
+                    <div className="flex items-center gap-2 text-gray-600 mb-2">
+                      <Pin size={16} />
+                      <span className="text-sm font-medium">Pinned ({pinnedMessages.length})</span>
+                    </div>
+                    <div className="space-y-2">
+                      {pinnedMessages.map(pm => (
+                        <div key={pm.id} className="bg-amber-50 border border-amber-200 text-amber-900 rounded-md p-2 text-sm">
+                          <div className="font-medium">{pm.title || 'Pinned'}</div>
+                          <div>{pm.content || pm.message || ''}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {filteredMessages.length === 0 ? (
                   <div className="flex flex-col items-center justify-center h-full text-gray-500">
                     <MessageSquare size={48} className="mb-2 opacity-50" />
-                    <p>No messages yet</p>
+                    <p>No messages found for current filters</p>
                   </div>
                 ) : (
-                  messages.map(msg => {
+                  filteredMessages.map(msg => {
                     console.log('Rendering message:', msg);
                     let displayName = msg.senderName || 'Unknown';
                     if (viewAllChats && msg.senderRole !== 'admin') {
@@ -473,9 +609,11 @@ const AdminChat = ({ jobId: propJobId, onClose }) => {
                 )}
               </div>
               <div className="p-3 border-t bg-white">
-                {!viewAllChats && !selectedStudent ? (
+                {viewAllChats || (!viewAllChats && !selectedStudent) ? (
                   <div className="text-center text-gray-500">
-                    Please select a student to send a message.
+                    {viewAllChats
+                      ? 'Switch to Single to send a message to a student.'
+                      : 'Please select a student to send a message.'}
                   </div>
                 ) : (
                   <div className="flex">
@@ -486,12 +624,12 @@ const AdminChat = ({ jobId: propJobId, onClose }) => {
                       value={newMessage}
                       onChange={(e) => setNewMessage(e.target.value)}
                       onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
-                      disabled={!viewAllChats && !selectedStudent}
+                      disabled={viewAllChats || (!viewAllChats && !selectedStudent)}
                     />
                     <button
                       className="bg-blue-500 text-white p-2 rounded-r-md hover:bg-blue-600 transition-colors disabled:bg-gray-400"
                       onClick={sendMessage}
-                      disabled={!viewAllChats && !selectedStudent}
+                      disabled={viewAllChats || (!viewAllChats && !selectedStudent)}
                     >
                       <Send size={20} />
                     </button>
@@ -511,7 +649,7 @@ const AdminChat = ({ jobId: propJobId, onClose }) => {
   );
 };
 
-const getStatusColor = (status) => {
+function getStatusColor(status) {
   switch (status?.toLowerCase()) {
     case 'shortlisted':
       return 'bg-green-100 text-green-800';
@@ -526,6 +664,6 @@ const getStatusColor = (status) => {
     default:
       return 'bg-yellow-100 text-yellow-800';
   }
-};
+}
 
 export default AdminChat;

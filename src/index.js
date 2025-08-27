@@ -6,15 +6,19 @@ import App from './App';
 import reportWebVitals from './reportWebVitals';
 import { suppressResizeObserverError } from './utils/resizeObserverFix';
 import { registerSW } from './serviceWorkerRegistration';
+import { ThemeProvider } from './context/ThemeContext';
+import { ToastContainer } from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
 
 // Suppress ResizeObserver loop errors
 suppressResizeObserverError();
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(
-  <React.StrictMode>
+  <ThemeProvider>
     <App />
-  </React.StrictMode>
+    <ToastContainer position="top-right" newestOnTop closeOnClick pauseOnFocusLoss draggable pauseOnHover theme="colored" />
+  </ThemeProvider>
 );
 
 // Register PWA service worker

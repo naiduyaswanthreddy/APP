@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { collection, query, getDocs, doc, where, deleteDoc, getDoc, updateDoc } from 'firebase/firestore';
+import { collection, query, getDocs, doc, where, deleteDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../../../firebase';
 import { ToastContainer, toast } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -8,6 +8,9 @@ import { addDoc, serverTimestamp } from 'firebase/firestore';
 import AdminChat from '../AdminChat';
 import NoData from '../../ui/NoData';
 import Loader from '../../../loading';
+import { TableSkeleton } from '../../ui/SkeletonLoaders';
+import { ContentLoader, PageTransition } from '../../ui/PageTransition';
+import { notifyDeadlineReminder, notifyGeneralAnnouncement } from '../../../utils/adminNotificationHelpers';
 
 // Custom toast component for truncating long messages
 const CustomToast = ({ message }) => {
@@ -53,6 +56,17 @@ const ManageApplications = () => {
   const [selectedYear, setSelectedYear] = useState(null);
   const [jobTypes, setJobTypes] = useState(['all']);
   const [eligibleYears, setEligibleYears] = useState([]);
+
+  // Helper function to calculate selected count including placed students
+  const calculateSelectedCount = (applications, jobId) => {
+    try {
+      // Use status from applications only to avoid heavy extra reads
+      return applications.filter(app => (app.status || '').toLowerCase() === 'selected').length;
+    } catch (error) {
+      console.error('Error calculating selected count:', error);
+      return applications.filter(app => (app.status || '').toLowerCase() === 'selected').length;
+    }
+  };
 
   const currentYear = new Date().getFullYear();
   const defaultYears = Array.from({length: 6}, (_, i) => currentYear - 3 + i);
@@ -163,8 +177,10 @@ const updateCompanyStats = async (companyName) => {
         // Query for both job_id and jobId fields to ensure we get all applications
         const applicationsQuery1 = query(applicationsRef, where('job_id', '==', jobDoc.id));
         const applicationsQuery2 = query(applicationsRef, where('jobId', '==', jobDoc.id));
-        const applicationsSnapshot1 = await getDocs(applicationsQuery1);
-        const applicationsSnapshot2 = await getDocs(applicationsQuery2);
+        const [applicationsSnapshot1, applicationsSnapshot2] = await Promise.all([
+          getDocs(applicationsQuery1),
+          getDocs(applicationsQuery2)
+        ]);
         
         // Combine results and remove duplicates
         const allApplications = [...applicationsSnapshot1.docs, ...applicationsSnapshot2.docs];
@@ -172,30 +188,8 @@ const updateCompanyStats = async (companyName) => {
           index === self.findIndex(d => d.id === doc.id)
         );
 
-        const applications = [];
-        for (const appDoc of uniqueApplications) {
-          const appData = appDoc.data();
-          const studentId = appData.student_id || appData.studentId;
-          let studentData = {};
-          if (studentId) {
-            try {
-              const sDoc = await getDoc(doc(db, 'students', studentId));
-              studentData = sDoc.exists() ? sDoc.data() : {};
-            } catch (e) {
-              console.warn('Failed to fetch student for application', appDoc.id, 'studentId:', studentId, e);
-            }
-          }
-
-          applications.push({
-            id: appDoc.id,
-            ...appData,
-            student: {
-              name: studentData.name || appData.student_name || 'N/A',
-              rollNumber: studentData.rollNumber || appData.student_rollNumber || 'N/A',
-              department: studentData.department || appData.student_department || 'N/A',
-            }
-          });
-        }
+        // Only use raw application data; avoid per-application student lookups here
+        const applications = uniqueApplications.map(appDoc => ({ id: appDoc.id, ...appDoc.data() }));
 
         // Handle Firestore timestamp
         let deadlineDate = null;
@@ -234,12 +228,12 @@ const updateCompanyStats = async (companyName) => {
           deadline: deadlineFormatted,
           stats: {
             total: applications.length,
-            shortlisted: applications.filter(app => app.status === 'shortlisted').length,
-            rejected: applications.filter(app => app.status === 'rejected').length,
-            selected: applications.filter(app => app.status === 'selected').length,
-            pending: applications.filter(app => ['pending', 'under_review'].includes(app.status)).length
-          },
-          applications: applications
+            shortlisted: applications.filter(app => (app.status || '').toLowerCase() === 'shortlisted').length,
+            rejected: applications.filter(app => (app.status || '').toLowerCase() === 'rejected').length,
+            selected: calculateSelectedCount(applications, jobDoc.id),
+            pending: applications.filter(app => ['pending', 'under_review'].includes((app.status || '').toLowerCase())).length
+          }
+          // Note: applications list omitted to keep memory/processing light on overview page
         });
       }
 
@@ -284,8 +278,9 @@ const updateCompanyStats = async (companyName) => {
     });
 
   return (
-    <div className="p-8 max-w-7xl mx-auto bg-gray-50 min-h-screen">
-      <ToastContainer />
+    <PageTransition>
+      <div className="p-8 max-w-7xl mx-auto bg-gray-50 min-h-screen">
+        <ToastContainer />
       {/* Header Section - always shown with total count */}
       <div className="bg-white rounded-xl shadow-lg p-6 border border-gray-100">
         <div className="flex flex-col md:flex-row justify-between items-center space-y-4 md:space-y-0">
@@ -368,14 +363,12 @@ const updateCompanyStats = async (companyName) => {
           </div>
         </div>
       )}
-      {/* Loading Overlay */}
-      {loading && (
-        <div className="fixed top-0 left-[20%] right-0 bottom-0 bg-gray-200 bg-opacity-10 flex items-center justify-center z-50">
-          <Loader />
-        </div>
-      )}
-      {/* Table Section or NoData */}
-      {!loading && (
+      {/* Table Section with ContentLoader */}
+      <ContentLoader
+        loading={loading}
+        skeleton={<TableSkeleton rows={5} columns={5} />}
+        minHeight="400px"
+      >
         <div className="bg-white rounded-xl shadow-lg overflow-hidden border border-gray-100">
           <div className="overflow-x-auto">
             {filteredJobs.length === 0 ? (
@@ -431,6 +424,7 @@ const updateCompanyStats = async (companyName) => {
                           >
                             👁 View
                           </button>
+                      
                           <button
                             onClick={() => handleChatClick(job.id)}
                             className="px-3 py-1 bg-green-50 text-green-600 rounded hover:bg-green-100"
@@ -471,8 +465,9 @@ const updateCompanyStats = async (companyName) => {
             )}
           </div>
         </div>
-      )}
-    </div>
+      </ContentLoader>
+      </div>
+    </PageTransition>
   );
 };
 

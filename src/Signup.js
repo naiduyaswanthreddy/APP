@@ -1,11 +1,14 @@
 import { createUserWithEmailAndPassword, updateProfile } from "firebase/auth";
 import { auth, db } from ".//firebase";
 import { doc, setDoc } from "firebase/firestore";
-import React, { useState } from 'react';
+import React, { useState, useContext } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { User, Building2 } from "lucide-react";
+import { ThemeContext } from './context/ThemeContext';
+import ThemeToggle from './components/ui/ThemeToggle';
 
 const Signup = () => {
+  const { isDarkMode } = useContext(ThemeContext);
   const [formData, setFormData] = useState({
     email: "",
     password: "",
@@ -95,20 +98,25 @@ const Signup = () => {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-100 p-4">
-      <div className="bg-white rounded-lg shadow-lg w-full max-w-md p-6">
-        <h2 className="text-2xl font-bold text-gray-800 text-center mb-4">Create Account</h2>
+    <div className="min-h-screen flex items-center justify-center bg-gray-100 dark:bg-gray-900 p-4 transition-colors duration-200">
+      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg w-full max-w-md p-6 relative">
+        {/* Theme Toggle */}
+        <div className="absolute top-4 right-4">
+          <ThemeToggle />
+        </div>
+        
+        <h2 className="text-2xl font-bold text-gray-800 dark:text-white text-center mb-4 mt-8">Create Account</h2>
 
         {/* Role Selection */}
         <div className="mb-6">
-          <div className="grid grid-cols-2 gap-2 p-1 bg-gray-100 rounded-lg">
+          <div className="grid grid-cols-2 gap-2 p-1 bg-gray-100 dark:bg-gray-700 rounded-lg">
             <button
               type="button"
               onClick={() => setSelectedRole("student")}
               className={`flex items-center justify-center gap-2 px-4 py-2 rounded-md transition-colors ${
                 selectedRole === "student"
-                  ? "bg-white shadow-sm text-blue-600"
-                  : "text-gray-600 hover:bg-gray-50"
+                  ? "bg-white dark:bg-gray-600 shadow-sm text-blue-600 dark:text-blue-400"
+                  : "text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600"
               }`}
             >
               <User size={18} />
@@ -119,8 +127,8 @@ const Signup = () => {
               onClick={() => setSelectedRole("admin")}
               className={`flex items-center justify-center gap-2 px-4 py-2 rounded-md transition-colors ${
                 selectedRole === "admin"
-                  ? "bg-white shadow-sm text-blue-600"
-                  : "text-gray-600 hover:bg-gray-50"
+                  ? "bg-white dark:bg-gray-600 shadow-sm text-blue-600 dark:text-blue-400"
+                  : "text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600"
               }`}
             >
               <Building2 size={18} />
@@ -129,23 +137,23 @@ const Signup = () => {
           </div>
         </div>
 
-        {error && <div className="bg-red-50 text-red-500 p-3 rounded-lg text-sm mb-4">{error}</div>}
+        {error && <div className="bg-red-50 dark:bg-red-900/20 text-red-500 dark:text-red-400 p-3 rounded-lg text-sm mb-4 border border-red-200 dark:border-red-800">{error}</div>}
 
         <form onSubmit={handleSignup} className="space-y-4">
-          <input name="name" type="text" placeholder="Full Name" onChange={handleChange} required className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none" />
-          <input name="email" type="email" placeholder="Email Address" onChange={handleChange} required className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none" />
-          <input name="mobile" type="text" placeholder="Mobile Number" onChange={handleChange} required className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none" />
+          <input name="name" type="text" placeholder="Full Name" onChange={handleChange} required className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400" />
+          <input name="email" type="email" placeholder="Email Address" onChange={handleChange} required className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400" />
+          <input name="mobile" type="text" placeholder="Mobile Number" onChange={handleChange} required className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400" />
           
           {selectedRole === "student" && (
             <>
-              <input name="rollNumber" type="text" placeholder="Roll Number" onChange={handleChange} required className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none" />
-              <select name="program" onChange={handleChange} className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none" required>
+              <input name="rollNumber" type="text" placeholder="Roll Number" onChange={handleChange} required className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400" />
+              <select name="program" onChange={handleChange} className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none bg-white dark:bg-gray-700 text-gray-900 dark:text-white" required>
                 <option value="">Select Degree</option>
                 <option value="BTech">BTech</option>
                 <option value="MBA">MBA</option>
               </select>
-              <input name="passoutYear" type="text" placeholder="Passout Year" onChange={handleChange} required className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none" />
-              <select name="department" onChange={handleChange} className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none" required>
+              <input name="passoutYear" type="text" placeholder="Passout Year" onChange={handleChange} required className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400" />
+              <select name="department" onChange={handleChange} className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none bg-white dark:bg-gray-700 text-gray-900 dark:text-white" required>
                 <option value="">Select Department</option>
                 <option value="CSE">CSE</option>
                 <option value="IT">IT</option>
@@ -163,17 +171,17 @@ const Signup = () => {
             </>
           )}
 
-          <input name="password" type="password" placeholder="Password" onChange={handleChange} required className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none" />
-          <input name="confirmPassword" type="password" placeholder="Confirm Password" onChange={handleChange} required className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none" />
+          <input name="password" type="password" placeholder="Password" onChange={handleChange} required className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400" />
+          <input name="confirmPassword" type="password" placeholder="Confirm Password" onChange={handleChange} required className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400" />
 
-          <button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white p-3 rounded-lg">
+          <button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 dark:bg-blue-700 dark:hover:bg-blue-800 text-white p-3 rounded-lg transition-colors duration-200">
             Sign Up as {selectedRole.charAt(0).toUpperCase() + selectedRole.slice(1)}
           </button>
         </form>
 
-        <p className="text-center mt-4">
+        <p className="text-center mt-4 text-gray-700 dark:text-gray-300">
           Already have an account?{" "}
-          <Link to="/login" className="text-blue-600 hover:text-blue-700 font-medium">
+          <Link to="/login" className="text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 font-medium">
             Login
           </Link>
         </p>

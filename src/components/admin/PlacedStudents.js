@@ -33,6 +33,8 @@ const PlacedStudents = () => {
   const [companies, setCompanies] = useState([]);
   const [departments, setDepartments] = useState([]);
   const [batches, setBatches] = useState([]);
+  const [currentPage, setCurrentPage] = useState(1);
+  const PAGE_SIZE = 25;
 
   useEffect(() => {
     fetchPlacedStudents();
@@ -59,43 +61,54 @@ const PlacedStudents = () => {
         getDocs(placedStudentsQuery)
       ]);
       
-      // Combine data from both sources with a unified shape
+      // Combine data from both sources with a unified shape and deduplicate
       let students = [];
+      const seenRollNumbers = new Set();
       
-      // From students collection
+      // From students collection (prioritize this source)
       studentsSnapshot.docs.forEach(doc => {
         const studentData = doc.data();
-        students.push({
-          id: doc.id,
-          source: 'students',
-          name: studentData.name || '',
-          rollNumber: studentData.rollNumber || '',
-          batch: studentData.batch || '',
-          department: studentData.department || '',
-          companyName: studentData.placedCompany || '',
-          jobTitle: studentData.placedJobTitle || '',
-          package: studentData.placedPackage || '',
-          location: studentData.placedLocation || '',
-          placedAt: studentData.placedAt || null
-        });
+        const rollNumber = studentData.rollNumber || '';
+        
+        if (rollNumber && !seenRollNumbers.has(rollNumber)) {
+          seenRollNumbers.add(rollNumber);
+          students.push({
+            id: doc.id,
+            source: 'students',
+            name: studentData.name || '',
+            rollNumber: rollNumber,
+            batch: studentData.batch || studentData.passoutYear || studentData.graduationYear || '',
+            department: studentData.department || '',
+            companyName: studentData.placedCompany || '',
+            jobTitle: studentData.placedJobTitle || '',
+            package: studentData.placedPackage || '',
+            location: studentData.placedLocation || '',
+            placedAt: studentData.placedAt || null
+          });
+        }
       });
       
-      // From placed_students collection
+      // From placed_students collection (only add if not already seen)
       placedStudentsSnapshot.docs.forEach(doc => {
         const placedData = doc.data();
-        students.push({
-          id: doc.id,
-          source: 'placed_students',
-          name: placedData.name || '',
-          rollNumber: placedData.rollNumber || '',
-          batch: placedData.batch || '',
-          department: placedData.department || '',
-          companyName: placedData.companyName || '',
-          jobTitle: placedData.jobTitle || '',
-          package: placedData.package || '',
-          location: placedData.location || '',
-          placedAt: placedData.acceptedAt || placedData.placedAt || null
-        });
+        const rollNumber = placedData.rollNumber || '';
+        
+        if (rollNumber && !seenRollNumbers.has(rollNumber)) {
+          seenRollNumbers.add(rollNumber);
+          students.push({
+            id: doc.id,
+            source: 'placed_students',
+            name: placedData.name || '',
+            rollNumber: rollNumber,
+            batch: placedData.batch || placedData.passoutYear || placedData.graduationYear || '',
+            department: placedData.department || '',
+            companyName: placedData.companyName || '',
+            jobTitle: placedData.jobTitle || '',
+            package: placedData.package || '',
+            location: placedData.location || '',
+            placedAt: placedData.acceptedAt || placedData.placedAt || null
+          });
+        }
       });
 
       // Apply filters
@@ -138,6 +151,7 @@ const PlacedStudents = () => {
       setBatches(uniqueBatches);
       setStats({ total: filteredStudents.length, averagePackage });
       setLoading(false);
+      setCurrentPage(1);
     } catch (error) {
       console.error('Error fetching placed students:', error);
       setLoading(false);
@@ -204,6 +218,7 @@ const PlacedStudents = () => {
           rollNumber: editingStudent.rollNumber,
           department: editingStudent.department,
           batch: editingStudent.batch,
+          passoutYear: editingStudent.batch,
           placedCompany: editingStudent.companyName,
           placedJobTitle: editingStudent.jobTitle,
           placedPackage: editingStudent.package,
@@ -258,6 +273,13 @@ const PlacedStudents = () => {
       department: 'all'
     });
   };
+
+  // Pagination calculations
+  const total = placedStudents.length;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const startIndex = (currentPage - 1) * PAGE_SIZE;
+  const endIndex = Math.min(startIndex + PAGE_SIZE, total);
+  const visibleStudents = placedStudents.slice(startIndex, endIndex);
 
   return (
     <div className="p-6 space-y-6">
@@ -350,7 +372,7 @@ const PlacedStudents = () => {
         <div className="bg-white rounded-lg shadow overflow-hidden">
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
+              <thead className="bg-blue-50">
                 <tr>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Roll Number</th>
@@ -364,7 +386,7 @@ const PlacedStudents = () => {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {placedStudents.map((student) => (
+                {visibleStudents.map((student) => (
                   <tr key={student.id} className="hover:bg-gray-50">
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{student.name}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{student.rollNumber}</td>
@@ -394,6 +416,31 @@ const PlacedStudents = () => {
                 ))}
               </tbody>
             </table>
+          </div>
+          {/* Pagination controls */}
+          <div className="flex items-center justify-between px-6 py-3 border-t bg-white">
+            <div className="text-sm text-gray-600">
+              Showing {total === 0 ? 0 : startIndex + 1}-{endIndex} of {total}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                className="px-3 py-1 border rounded disabled:opacity-50"
+                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+              >
+                Prev
+              </button>
+              <span className="text-sm text-gray-700">
+                Page {currentPage} of {totalPages}
+              </span>
+              <button
+                className="px-3 py-1 border rounded disabled:opacity-50"
+                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                disabled={currentPage >= totalPages}
+              >
+                Next
+              </button>
+            </div>
           </div>
         </div>
       )}

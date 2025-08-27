@@ -1,19 +1,24 @@
-import React, { useState, useEffect } from 'react';
-import { collection, getDocs, query, orderBy, where, updateDoc, doc, onSnapshot, writeBatch, serverTimestamp, deleteDoc } from 'firebase/firestore';
+import React, { useState, useEffect, useRef } from 'react';
+import { collection, getDocs, query, orderBy, where, updateDoc, doc, onSnapshot, writeBatch, serverTimestamp, deleteDoc, getDoc, setDoc } from 'firebase/firestore';
 import { db, auth } from '../../firebase';
 import { getCurrentStudentRollNumber } from '../../utils/studentIdentity';
-import { ToastContainer } from 'react-toastify';
-import 'react-toastify/dist/ReactToastify.css';
-import { Bell, Briefcase, CheckCircle, AlertCircle, Calendar, FileText, MessageSquare } from 'lucide-react';
+import { getNotificationSettings } from '../../utils/notificationSettings';
+import { toast } from 'react-toastify';
+import { Bell, Briefcase, CheckCircle, AlertCircle, Calendar, FileText, MessageSquare, Settings, Trash2, Undo2 } from 'lucide-react';
 import LoadingSpinner from '../ui/LoadingSpinner';
-import Loader from '../../loading'; // Add this import at the top
+import Loader from '../../loading';
 
 
 // Notification icon component based on notification type
 const NotificationIcon = ({ type }) => {
   const iconMap = {
     job_posting: <Briefcase size={20} />,
+    job_update: <Briefcase size={20} />,
     status_update: <CheckCircle size={20} />,
+    chat_message: <MessageSquare size={20} />,
+    task_added: <FileText size={20} />,
+    task_reminder: <AlertCircle size={20} />,
+    gallery_update: <FileText size={20} />,
     announcement: <MessageSquare size={20} />,
     interview: <Calendar size={20} />,
     reminder: <AlertCircle size={20} />
@@ -21,9 +26,14 @@ const NotificationIcon = ({ type }) => {
 
   const iconClasses = {
     job_posting: "bg-blue-100 text-blue-600",
+    job_update: "bg-blue-100 text-blue-500",
     status_update: "bg-green-100 text-green-600",
+    chat_message: "bg-indigo-100 text-indigo-600",
+    task_added: "bg-purple-100 text-purple-600",
+    task_reminder: "bg-orange-100 text-orange-600",
+    gallery_update: "bg-pink-100 text-pink-600",
     announcement: "bg-yellow-100 text-yellow-600",
-    interview: "bg-purple-100 text-purple-600",
+    interview: "bg-red-100 text-red-600",
     reminder: "bg-orange-100 text-orange-600"
   };
 
@@ -39,6 +49,30 @@ const Notifications = () => {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('all');
   const [unreadCount, setUnreadCount] = useState(0);
+  const [notificationSettings, setNotificationSettings] = useState(null);
+  const [lastClearedAt, setLastClearedAt] = useState(null);
+  const [pendingDeletes, setPendingDeletes] = useState(new Map());
+  // Keep a ref in sync to access latest state inside toast onClose
+  const pendingDeletesRef = useRef(new Map());
+  const [touchStart, setTouchStart] = useState(null);
+  const [touchEnd, setTouchEnd] = useState(null);
+  
+  useEffect(() => {
+    pendingDeletesRef.current = pendingDeletes;
+  }, [pendingDeletes]);
+
+  // Load notification settings
+  useEffect(() => {
+    const loadSettings = async () => {
+      try {
+        const settings = await getNotificationSettings();
+        setNotificationSettings(settings);
+      } catch (error) {
+        console.error('Error loading notification settings:', error);
+      }
+    };
+    loadSettings();
+  }, []);
 
   useEffect(() => {
     const userId = auth.currentUser?.uid;
@@ -91,33 +125,59 @@ const Notifications = () => {
       };
     };
 
-    const handleNotificationsUpdate = (snapshot, source) => {
+    const handleNotificationsUpdate = async (snapshot, source) => {
       // In the handleNotificationsUpdate function
-      const newNotifications = snapshot.docs.map(doc => {
-        const data = doc.data();
-        // Suppress auto toasts on page
-        
+      const userId = auth.currentUser?.uid;
+      if (!userId) return;
+
+      const newNotifications = await Promise.all(snapshot.docs.map(async (snapDoc) => {
+        const data = snapDoc.data();
+        let isRead = data.isRead !== undefined ? data.isRead : (data.read !== undefined ? !data.read : false);
+
+        // For general notifications, check user-specific read and hidden status
+        if (data.isGeneral) {
+          try {
+            const [readStatusDoc, hiddenStatusDoc] = await Promise.all([
+              getDoc(doc(db, 'notification_read_status', `${snapDoc.id}_${userId}`)),
+              getDoc(doc(db, 'notification_hidden_status', `${snapDoc.id}_${userId}`))
+            ]);
+            if (readStatusDoc.exists()) {
+              isRead = readStatusDoc.data().isRead;
+            }
+            if (hiddenStatusDoc.exists() && hiddenStatusDoc.data()?.hidden) {
+              // Return null to indicate this notification should be hidden for this user
+              return null;
+            }
+            // If lastClearedAt is set, hide any general notifications older than this timestamp
+            if (lastClearedAt && (data.timestamp?.toDate?.() || new Date(0)) <= lastClearedAt) {
+              return null;
+            }
+          } catch (error) {
+            console.error('Error checking read/hidden status:', error);
+          }
+        }
+
         return {
-          id: doc.id,
+          id: snapDoc.id,
           ...data,
-          // Handle both isRead and read fields
-          isRead: data.isRead !== undefined ? data.isRead : (data.read !== undefined ? !data.read : false),
+          isRead: isRead,
           // Map job type to expected types
           type: data.type === 'job' ? 'job_posting' : data.type,
           timestamp: data.timestamp?.toDate() || new Date()
         };
-      });
+      }));
 
       // Merge notifications from both sources and sort by timestamp
+      const cleanedNotifications = newNotifications.filter(Boolean);
       if (source === 'user') {
         setNotifications(prevNotifications => {
           const generalNotifications = prevNotifications.filter(n => n.isGeneral);
-          return [...newNotifications, ...generalNotifications].sort((a, b) => b.timestamp - a.timestamp);
+          return [...cleanedNotifications, ...generalNotifications].sort((a, b) => b.timestamp - a.timestamp);
         });
       } else {
         setNotifications(prevNotifications => {
           const userNotifications = prevNotifications.filter(n => !n.isGeneral);
-          return [...userNotifications, ...newNotifications].sort((a, b) => b.timestamp - a.timestamp);
+          return [...userNotifications, ...cleanedNotifications].sort((a, b) => b.timestamp - a.timestamp);
         });
       }
       
@@ -155,16 +215,38 @@ const Notifications = () => {
   const filterButtons = [
     { label: 'All', value: 'all' },
     { label: 'Job Postings', value: 'job_posting' },
+    { label: 'Job Updates', value: 'job_update' },
     { label: 'Status Updates', value: 'status_update' },
+    { label: 'Chat Messages', value: 'chat_message' },
+    { label: 'Tasks', value: 'task_added' },
+    { label: 'Reminders', value: 'task_reminder' },
+    { label: 'Gallery', value: 'gallery_update' },
     { label: 'Announcements', value: 'announcement' },
-    { label: 'Interviews', value: 'interview' },
-    { label: 'Reminders', value: 'reminder' }
+    { label: 'Interviews', value: 'interview' }
   ];
 
-  // Filter notifications based on selected filter
-  const filteredNotifications = filter === 'all' 
-    ? notifications 
-    : notifications.filter(n => n.type === filter);
+  // Filter notifications based on selected filter and settings
+  const filteredNotifications = (() => {
+    let filtered = notifications;
+    
+    // Apply category filter
+    if (filter !== 'all') {
+      filtered = filtered.filter(n => n.type === filter);
+    }
+    
+    // Apply settings filter (hide disabled categories)
+    if (notificationSettings) {
+      filtered = filtered.filter(n => {
+        const categoryEnabled = notificationSettings.categories[n.type];
+        return categoryEnabled !== false;
+      });
+    }
+    
+    // Hide pending deletes
+    filtered = filtered.filter(n => !pendingDeletes.has(n.id));
+    
+    return filtered;
+  })();
 
   // Sort notifications to show unread first
   const sortedNotifications = [...filteredNotifications].sort((a, b) => {
@@ -211,13 +293,115 @@ const Notifications = () => {
     }
   };
 
-  const deleteNotification = async (notificationId) => {
+  // Handle swipe gestures
+  const handleTouchStart = (e) => {
+    setTouchEnd(null);
+    setTouchStart(e.targetTouches[0].clientX);
+  };
+
+  const handleTouchMove = (e) => {
+    setTouchEnd(e.targetTouches[0].clientX);
+  };
+
+  const handleTouchEnd = (notificationId) => {
+    if (!touchStart || !touchEnd) return;
+    
+    const distance = touchStart - touchEnd;
+    const isLeftSwipe = distance > 50;
+    const isRightSwipe = distance < -50;
+
+    if (isRightSwipe) {
+      // Swipe right to delete
+      handleSwipeDelete(notificationId);
+    }
+  };
+
+  // Handle swipe-to-delete with undo
+  const handleSwipeDelete = (notificationId) => {
+    const notification = notifications.find(n => n.id === notificationId);
+    if (!notification) return;
+
+    // Add to pending deletes
+    setPendingDeletes(prev => new Map(prev.set(notificationId, notification)));
+    
+    // Show undo toast
+    const toastId = toast(
+      <div className="flex items-center justify-between">
+        <span>Notification deleted</span>
+        <button
+          onClick={() => handleUndoDelete(notificationId, toastId)}
+          className="ml-2 px-2 py-1 bg-blue-500 text-white rounded text-sm"
+        >
+          Undo
+        </button>
+      </div>,
+      {
+        autoClose: 3000,
+        closeOnClick: false,
+        // Only confirm delete if it's still pending (not undone)
+        onClose: () => {
+          if (pendingDeletesRef.current.has(notificationId)) {
+            confirmDelete(notificationId);
+          }
+        }
+      }
+    );
+  };
+
+  // Undo delete
+  const handleUndoDelete = (notificationId, toastId) => {
+    // Remove from pending deletes
+    setPendingDeletes(prev => {
+      const newMap = new Map(prev);
+      newMap.delete(notificationId);
+      return newMap;
+    });
+    
+    // Dismiss the toast immediately to prevent onClose auto-delete later
+    if (toastId) {
+      toast.dismiss(toastId);
+    }
+
+    toast.success('Notification restored');
+  };
+
+  // Confirm permanent deletion
+  const confirmDelete = async (notificationId) => {
     try {
-      await deleteDoc(doc(db, 'notifications', notificationId));
+      const notification = pendingDeletes.get(notificationId);
+      if (!notification) return;
+
+      if (notification.isGeneral) {
+        // For general notifications, create a hidden marker
+        const userId = auth.currentUser?.uid;
+        if (userId) {
+          await setDoc(doc(db, 'notification_hidden_status', `${notificationId}_${userId}`), {
+            notificationId,
+            userId,
+            hidden: true,
+            hiddenAt: serverTimestamp()
+          });
+        }
+      } else {
+        // For user-specific notifications, delete the document
+        await deleteDoc(doc(db, 'notifications', notificationId));
+      }
+      
+      // Remove from local state
       setNotifications(prev => prev.filter(n => n.id !== notificationId));
+      setPendingDeletes(prev => {
+        const newMap = new Map(prev);
+        newMap.delete(notificationId);
+        return newMap;
+      });
     } catch (error) {
       console.error('Error deleting notification:', error);
+      toast.error('Failed to delete notification');
     }
+  };
+
+  const deleteNotification = async (notificationId) => {
+    handleSwipeDelete(notificationId);
   };
 
   if (loading) {
@@ -230,7 +414,6 @@ const Notifications = () => {
 
   return (
     <div className="px-2 sm:px-6 py-6 pb-24 relative">
-      <ToastContainer />
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-3">
           <h2 className="text-2xl font-semibold">Notifications</h2>
@@ -241,6 +424,13 @@ const Notifications = () => {
           )}
         </div>
         <div className="flex gap-2">
+          <button
+            onClick={() => window.location.href = '/student/notification-settings'}
+            className="px-3 py-1 bg-gray-100 text-gray-700 rounded-full text-sm hover:bg-gray-200 transition-colors flex items-center gap-1"
+          >
+            <Settings size={14} />
+            Settings
+          </button>
           {unreadCount > 0 && (
             <button
               onClick={markAllAsRead}
@@ -267,15 +457,26 @@ const Notifications = () => {
                     const sUid = await getDocs(qUid);
                     sUid.forEach(d => batch.delete(doc(db, 'notifications', d.id)));
                   }
-                  // Mark general student notifications as read (don't delete global messages)
-                  const qGen = query(collection(db, 'notifications'), where('isGeneral', '==', true), where('recipientType', '==', 'student'));
-                  const sGen = await getDocs(qGen);
-                  sGen.forEach(d => batch.update(doc(db, 'notifications', d.id), { isRead: true, read: true }));
+                  // Clean up any existing per-user markers (optional housekeeping)
+                  const readMarkersQ = query(collection(db, 'notification_read_status'), where('userId', '==', userId));
+                  const hiddenMarkersQ = query(collection(db, 'notification_hidden_status'), where('userId', '==', userId));
+                  const [readMarkersS, hiddenMarkersS] = await Promise.all([
+                    getDocs(readMarkersQ),
+                    getDocs(hiddenMarkersQ)
+                  ]);
+                  readMarkersS.forEach(d => batch.delete(doc(db, 'notification_read_status', d.id)));
+                  hiddenMarkersS.forEach(d => batch.delete(doc(db, 'notification_hidden_status', d.id)));
+                  // Update per-user state to mark the time of clearing
+                  const userStateRef = doc(db, 'notification_user_state', userId);
+                  batch.set(userStateRef, { lastClearedAt: serverTimestamp() }, { merge: true });
                   await batch.commit();
                   // Update local UI
                   setNotifications([]);
+                  setLastClearedAt(new Date());
+                  toast.success('All notifications cleared');
                 } catch (e) {
                   console.error('Error clearing notifications:', e);
+                  toast.error('Failed to clear all notifications');
                 }
               }}
               className="px-3 py-1 bg-gray-200 text-gray-800 rounded-full text-sm hover:bg-gray-300 transition-colors"
@@ -309,8 +510,11 @@ const Notifications = () => {
           sortedNotifications.map((notification) => (
             <div
               key={notification.id}
-              className={`p-4 rounded-lg shadow border ${getNotificationStyle(notification.type, notification.isRead)}`}
+              className={`p-4 rounded-lg shadow border ${getNotificationStyle(notification.type, notification.isRead)} touch-pan-y select-none`}
               onClick={() => !notification.isRead && markAsRead(notification.id)}
+              onTouchStart={handleTouchStart}
+              onTouchMove={handleTouchMove}
+              onTouchEnd={() => handleTouchEnd(notification.id)}
             >
               <div className="flex items-start gap-4">
                 <NotificationIcon type={notification.type} />
@@ -325,19 +529,19 @@ const Notifications = () => {
                     <div className="flex items-center gap-2">
                       <button
                         onClick={(e) => { e.stopPropagation(); markAsRead(notification.id); }}
-                        className="text-green-600 hover:text-green-800"
+                        className="text-green-600 hover:text-green-800 p-1"
                         title="Mark as read"
                         aria-label="Mark as read"
                       >
-                        ✓
+                        <CheckCircle size={16} />
                       </button>
                       <button
                         onClick={(e) => { e.stopPropagation(); deleteNotification(notification.id); }}
-                        className="text-red-600 hover:text-red-800"
+                        className="text-red-600 hover:text-red-800 p-1"
                         title="Delete"
                         aria-label="Delete"
                       >
-                        🗑
+                        <Trash2 size={16} />
                       </button>
                       <p className="text-sm text-gray-400">
                         {notification.timestamp.toLocaleString()}
@@ -357,6 +561,9 @@ const Notifications = () => {
                       View Details →
                     </a>
                   )}
+                  <div className="mt-2 text-xs text-gray-400">
+                    💡 Swipe right to delete
+                  </div>
                 </div>
               </div>
             </div>

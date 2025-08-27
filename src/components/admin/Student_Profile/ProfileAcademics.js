@@ -187,9 +187,9 @@ const ProfileAcademics = ({ userData: propUserData, isAdminView }) => {
         const studentSnap = await getDoc(studentRef);
         const studentData = studentSnap.exists() ? studentSnap.data() : {};
         
-        // Get applications data
+        // Get applications data (backend stores student reference as "student_id")
         const applicationsRef = collection(db, "applications");
-        const q = query(applicationsRef, where("studentId", "==", user.uid));
+        const q = query(applicationsRef, where("student_id", "==", user.uid));
         const querySnapshot = await getDocs(q);
         
         // Process application data
@@ -205,7 +205,9 @@ const ProfileAcademics = ({ userData: propUserData, isAdminView }) => {
         const eligibleJobs = allJobs.filter(job => {
           // Check if student meets job criteria (CGPA, etc.)
           const meetsMinCGPA = !job.minCGPA || (studentData.cgpa && parseFloat(studentData.cgpa) >= parseFloat(job.minCGPA));
-          const meetsArrearCriteria = !job.maxArrears || (studentData.currentArrears && parseInt(studentData.currentArrears) <= parseInt(job.maxArrears));
+          // Job schema uses maxCurrentArrears; fall back to legacy name if present
+          const maxCurrentArrears = job.maxCurrentArrears ?? job.maxArrears;
+          const meetsArrearCriteria = !maxCurrentArrears || (studentData.currentArrears && parseInt(studentData.currentArrears) <= parseInt(maxCurrentArrears));
           // Add more criteria as needed
           return meetsMinCGPA && meetsArrearCriteria;
         });
@@ -226,9 +228,16 @@ const ProfileAcademics = ({ userData: propUserData, isAdminView }) => {
         }));
         
         // Also update the timeline data
-        setApplicationTimeline(applications
-          .sort((a, b) => b.appliedDate.toDate() - a.appliedDate.toDate())
-          .slice(0, 5) // Show only the 5 most recent
+        // Use appliedAt from backend and guard against missing timestamps
+        setApplicationTimeline(
+          applications
+            .filter(a => a.appliedAt)
+            .sort((a, b) => {
+              const aTime = a.appliedAt?.toDate ? a.appliedAt.toDate().getTime() : 0;
+              const bTime = b.appliedAt?.toDate ? b.appliedAt.toDate().getTime() : 0;
+              return bTime - aTime;
+            })
+            .slice(0, 5)
         );
         
       } catch (error) {

@@ -56,34 +56,96 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
+// Initialize Firebase for background messaging (must be hardcoded in SW)
 firebase.initializeApp({
-  apiKey: self?.env?.REACT_APP_FIREBASE_API_KEY || undefined,
-  authDomain: undefined,
-  projectId: undefined,
-  messagingSenderId: undefined,
-  appId: undefined,
+  apiKey: "AIzaSyAJuJ8DKdnn75WgvyXnKV3PJwp4BbwMvCc",
+  authDomain: "trail-f142f.firebaseapp.com",
+  projectId: "trail-f142f",
+  storageBucket: "trail-f142f.firebasestorage.app",
+  messagingSenderId: "472625893135",
+  appId: "1:472625893135:web:0096c358c7589df975f87a",
 });
 
 const messaging = firebase.messaging();
 
 messaging.onBackgroundMessage((payload) => {
+  console.log('Background message received:', payload);
+  
   const notificationTitle = payload.notification?.title || 'Placement Update';
   const notificationOptions = {
-    body: payload.notification?.body,
-    icon: '/logo192.png',
+    body: payload.notification?.body || 'You have a new notification',
+    icon: payload.notification?.icon || '/logo192.png',
+    badge: '/favicon.ico',
     data: payload.data || {},
+    tag: payload.data?.notificationId || 'placement-notification',
+    requireInteraction: true, // Keep notification visible until user interacts
+    silent: false,
+    vibrate: [200, 100, 200], // Vibration pattern for mobile
+    actions: [
+      {
+        action: 'view',
+        title: 'View',
+        icon: '/logo192.png'
+      },
+      {
+        action: 'dismiss',
+        title: 'Dismiss'
+      }
+    ]
   };
-  self.registration.showNotification(notificationTitle, notificationOptions);
+  
+  return self.registration.showNotification(notificationTitle, notificationOptions);
 });
 
 self.addEventListener('notificationclick', function (event) {
+  console.log('Notification clicked:', event);
   event.notification.close();
-  const url = event.notification?.data?.url || '/';
-  event.waitUntil(clients.matchAll({ type: 'window' }).then((clientList) => {
-    for (const client of clientList) {
-      if ('focus' in client) return client.focus();
-    }
-    if (clients.openWindow) return clients.openWindow(url);
-  }));
+  
+  if (event.action === 'dismiss') {
+    // Just close the notification
+    return;
+  }
+  
+  // Handle view action or default click
+  const url = event.notification?.data?.actionLink || 
+              event.notification?.data?.url || 
+              '/student/notifications';
+  
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      // Check if there's already a window/tab open with our app
+      for (const client of clientList) {
+        if (client.url.includes(self.location.origin) && 'focus' in client) {
+          client.focus();
+          // Navigate to the notification URL
+          client.postMessage({
+            type: 'NOTIFICATION_CLICK',
+            url: url
+          });
+          return client;
+        }
+      }
+      // If no existing window, open a new one
+      if (clients.openWindow) {
+        return clients.openWindow(url);
+      }
+    })
+  );
+});
+
+// Handle notification action clicks
+self.addEventListener('notificationaction', function(event) {
+  console.log('Notification action clicked:', event.action);
+  
+  if (event.action === 'view') {
+    event.notification.close();
+    const url = event.notification?.data?.actionLink || '/student/notifications';
+    
+    event.waitUntil(
+      clients.openWindow(url)
+    );
+  } else if (event.action === 'dismiss') {
+    event.notification.close();
+  }
 });
 

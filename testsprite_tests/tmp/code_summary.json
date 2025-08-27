@@ -1,0 +1,104 @@
+{
+  "tech_stack": [
+    "JavaScript",
+    "React.js 18.2.0",
+    "Firebase 9.23.0",
+    "Node.js",
+    "Firestore NoSQL",
+    "Material-UI 7.3.1",
+    "Tailwind CSS",
+    "Chart.js",
+    "SendGrid",
+    "Firebase Functions",
+    "Firebase Auth",
+    "Firebase Storage",
+    "Firebase Cloud Messaging"
+  ],
+  "features": [
+    {
+      "name": "Authentication System",
+      "description": "Firebase-based authentication with role-based access control for students, admins, and companies",
+      "files": ["src/AuthHandler.js", "src/App.js", "src/context/ThemeContext.js"]
+    },
+    {
+      "name": "Admin Dashboard",
+      "description": "Comprehensive admin panel with analytics, job posting, student management, and company relations",
+      "files": [
+        "src/components/admin/useAnalyticsData.js",
+        "src/components/admin/JobPost.js",
+        "src/components/admin/CompaniesFixed.js",
+        "src/components/admin/CompaniesNew.js",
+        "src/components/admin/Companies.js"
+      ]
+    },
+    {
+      "name": "Student Management",
+      "description": "Student profile management, academic tracking, job applications, and progress monitoring",
+      "files": ["src/components/student/"]
+    },
+    {
+      "name": "Job Posting System",
+      "description": "Job creation, posting, application management, and eligibility criteria handling",
+      "files": ["src/components/admin/JobPost.js"]
+    },
+    {
+      "name": "Company Management",
+      "description": "Company registration, profile management, and job posting capabilities",
+      "files": [
+        "src/components/admin/Companies.js",
+        "src/components/admin/CompaniesFixed.js",
+        "src/components/admin/CompaniesNew.js"
+      ]
+    },
+    {
+      "name": "Analytics Dashboard",
+      "description": "Real-time analytics and reporting with Chart.js visualization for placement statistics",
+      "files": ["src/components/admin/useAnalyticsData.js"]
+    },
+    {
+      "name": "Notification System",
+      "description": "Push notifications via Firebase Cloud Messaging and email notifications via SendGrid",
+      "files": ["functions/index.js", "public/firebase-messaging-sw.js"]
+    },
+    {
+      "name": "Firebase Functions Backend",
+      "description": "Serverless backend functions for notifications, email handling, and data processing",
+      "files": ["functions/index.js", "functions/package.json"]
+    },
+    {
+      "name": "Performance Monitoring",
+      "description": "Application performance tracking and optimization utilities",
+      "files": ["src/utils/performanceMonitor.js"]
+    },
+    {
+      "name": "Error Handling",
+      "description": "Global error boundary and error handling mechanisms",
+      "files": ["src/utils/errorHandler.js"]
+    },
+    {
+      "name": "API Caching",
+      "description": "Custom hooks for API response caching and Firebase query optimization",
+      "files": ["src/hooks/useApiCache.js", "src/hooks/useFirebaseQuery.js"]
+    },
+    {
+      "name": "Responsive Design",
+      "description": "Mobile-responsive CSS and Tailwind configuration for cross-device compatibility",
+      "files": ["src/styles/mobile-responsive.css", "tailwind.config.js"]
+    },
+    {
+      "name": "Common Components",
+      "description": "Reusable UI components and utilities shared across the application",
+      "files": ["src/components/common/", "src/loading.js"]
+    },
+    {
+      "name": "Firebase Configuration",
+      "description": "Firebase project setup, security rules, and deployment configuration",
+      "files": ["firebase.json", ".firebaserc", "public/firebase-messaging-sw.js"]
+    },
+    {
+      "name": "Build System",
+      "description": "Webpack configuration and build optimization for production deployment",
+      "files": ["webpack.config.js", "package.json"]
+    }
+  ]
+}

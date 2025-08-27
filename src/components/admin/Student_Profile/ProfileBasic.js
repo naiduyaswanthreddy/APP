@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { auth, db } from "../../../firebase";
 import { doc, getDoc, setDoc, updateDoc, serverTimestamp, collection, getDocs, query, where } from "firebase/firestore";
+import { unfreezeStudents } from "../../../utils/freezeService";
 import { ToastContainer, toast } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import { useNavigate, Link } from "react-router-dom";
@@ -207,7 +208,8 @@ const ProfileBasic = ({ userData: propUserData = {}, isAdminView, onUserDataChan
         
         // Get applications data
         const applicationsRef = collection(db, "applications");
-        const q = query(applicationsRef, where("studentId", "==", user.uid));
+        // Backend stores the student reference as "student_id"
+        const q = query(applicationsRef, where("student_id", "==", user.uid));
         const querySnapshot = await getDocs(q);
         
         // Process application data
@@ -223,7 +225,9 @@ const ProfileBasic = ({ userData: propUserData = {}, isAdminView, onUserDataChan
         const eligibleJobs = allJobs.filter(job => {
           // Check if student meets job criteria (CGPA, etc.)
           const meetsMinCGPA = !job.minCGPA || (studentData.cgpa && parseFloat(studentData.cgpa) >= parseFloat(job.minCGPA));
-          const meetsArrearCriteria = !job.maxArrears || (studentData.currentArrears && parseInt(studentData.currentArrears) <= parseInt(job.maxArrears));
+          // Job schema uses maxCurrentArrears; fall back safely if absent
+          const maxCurrentArrears = job.maxCurrentArrears ?? job.maxArrears; // support older field name if any
+          const meetsArrearCriteria = !maxCurrentArrears || (studentData.currentArrears && parseInt(studentData.currentArrears) <= parseInt(maxCurrentArrears));
           // Add more criteria as needed
           return meetsMinCGPA && meetsArrearCriteria;
         });
@@ -752,32 +756,156 @@ const ProfileBasic = ({ userData: propUserData = {}, isAdminView, onUserDataChan
         </div>
 
         {/* Freeze Information Card */}
-        <div className="rounded-xl shadow p-6 bg-green-50 border border-gray-200 mb-6">
+        <div className={`rounded-xl shadow p-6 border border-gray-200 mb-6 ${propUserData.freezed?.active ? 'bg-red-50' : 'bg-green-50'}`}>
           <h3 className="text-lg font-semibold flex items-center gap-2 mb-4 text-gray-800 border-b pb-2">
-            <AlertTriangle size={18} /> Freeze Information
+            <AlertTriangle size={18} className={propUserData.freezed?.active ? 'text-red-600' : 'text-gray-600'} /> 
+            Freeze Status
+            {isAdminView && propUserData.freezed?.active && (
+              <button
+                onClick={async () => {
+                  if (window.confirm('Are you sure you want to unfreeze this student?')) {
+                    try {
+                      const reason = prompt('Please provide a reason for unfreezing:');
+                      if (reason && reason.trim()) {
+                        const studentPayload = [{
+                          id: propUserData.uid || propUserData.id,
+                          rollNumber: propUserData.rollNumber || 'UNKNOWN',
+                          batch: propUserData.batch || '',
+                          department: propUserData.department || '',
+                          currentFreeze: {
+                            active: true,
+                            freezeHistory: propUserData.freezeHistory || []
+                          }
+                        }];
+
+                        await unfreezeStudents(studentPayload, { reason: reason.trim() }, { push: true });
+
+                        toast.success('Student unfrozen successfully');
+                        
+                        // Refresh the user data
+                        if (onUserDataChange) {
+                          const updatedDoc = await getDoc(doc(db, 'students', propUserData.uid || propUserData.id));
+                          onUserDataChange(updatedDoc.data());
+                        }
+                      }
+                    } catch (error) {
+                      console.error('Error unfreezing student:', error);
+                      toast.error('Failed to unfreeze student: ' + error.message);
+                    }
+                  }
+                }}
+                className="ml-auto px-3 py-1 bg-green-600 text-white text-sm rounded hover:bg-green-700"
+              >
+                Unfreeze
+              </button>
+            )}
           </h3>
-          <div className="grid grid-cols-2 gap-5">
-            <div>
-              <div className="text-sm font-semibold text-emerald-700">Freezed</div>
-              {isEditing ? (
-                <input type="checkbox" checked={editData.freezed} onChange={e => setEditData({ ...editData, freezed: e.target.checked })} />
-              ) : (
-                <div className="text-lg text-gray-800">{propUserData.freezed ? 'Yes' : 'No'}</div>
-              )}
+          
+          {propUserData.freezed?.active ? (
+            <div className="space-y-4">
+              <div className="bg-red-100 border border-red-300 rounded-lg p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <AlertTriangle className="text-red-600" size={16} />
+                  <span className="font-semibold text-red-800">Account is Currently Frozen</span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                  <div>
+                    <span className="font-medium text-red-700">Reason:</span>
+                    <div className="text-red-800">{propUserData.freezed.reason}</div>
+                  </div>
+                  <div>
+                    <span className="font-medium text-red-700">Category:</span>
+                    <div className="text-red-800 capitalize">{propUserData.freezed.category}</div>
+                  </div>
+                  <div>
+                    <span className="font-medium text-red-700">Frozen By:</span>
+                    <div className="text-red-800">{propUserData.freezed.byName}</div>
+                  </div>
+                  <div>
+                    <span className="font-medium text-red-700">From:</span>
+                    <div className="text-red-800">
+                      {propUserData.freezed.from ? new Date(propUserData.freezed.from.toDate()).toLocaleString() : 'N/A'}
+                    </div>
+                  </div>
+                  {propUserData.freezed.until && (
+                    <div>
+                      <span className="font-medium text-red-700">Until:</span>
+                      <div className="text-red-800">
+                        {new Date(propUserData.freezed.until.toDate()).toLocaleString()}
+                      </div>
+                    </div>
+                  )}
+                  {propUserData.freezed.notes && (
+                    <div className="col-span-2">
+                      <span className="font-medium text-red-700">Notes:</span>
+                      <div className="text-red-800">{propUserData.freezed.notes}</div>
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
-            <div>
-              <div className="text-sm font-semibold text-emerald-700">Freeze History</div>
-              {isEditing ? (
-                <textarea className="text-lg text-gray-800 border rounded px-2 py-1 w-full" value={editData.freezeHistory} onChange={e => setEditData({ ...editData, freezeHistory: e.target.value })} placeholder="Comma separated log entries" />
-              ) : (
-                propUserData.freezeHistory && propUserData.freezeHistory.length > 0 ? (
-                  <button className="text-blue-500 hover:underline">Download Log</button>
-                ) : (
-                  <div className="text-lg text-gray-800">No history</div>
-                )
-              )}
+          ) : (
+            <div className="bg-green-100 border border-green-300 rounded-lg p-4">
+              <div className="flex items-center gap-2">
+                <Check className="text-green-600" size={16} />
+                <span className="font-semibold text-green-800">Account is Active</span>
+              </div>
+              <p className="text-green-700 text-sm mt-1">Student can apply for jobs and participate in placement activities.</p>
             </div>
-          </div>
+          )}
+
+          {/* Freeze History */}
+          {propUserData.freezeHistory && propUserData.freezeHistory.length > 0 && (
+            <div className="mt-6">
+              <h4 className="font-semibold text-gray-800 mb-3">Freeze History</h4>
+              <div className="space-y-3 max-h-60 overflow-y-auto">
+                {propUserData.freezeHistory.slice().reverse().map((entry, index) => (
+                  <div key={index} className="bg-white border rounded-lg p-3 text-sm">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className={`px-2 py-1 rounded text-xs font-medium ${
+                        entry.action === 'freeze' ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'
+                      }`}>
+                        {entry.action.toUpperCase()}
+                      </span>
+                      <span className="text-gray-500">
+                        {entry.at ? new Date(entry.at.toDate()).toLocaleString() : 'N/A'}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                      <div>
+                        <span className="font-medium text-gray-600">Reason:</span>
+                        <div className="text-gray-800">{entry.reason}</div>
+                      </div>
+                      <div>
+                        <span className="font-medium text-gray-600">By:</span>
+                        <div className="text-gray-800">{entry.byName}</div>
+                      </div>
+                      {entry.category && (
+                        <div>
+                          <span className="font-medium text-gray-600">Category:</span>
+                          <div className="text-gray-800 capitalize">{entry.category}</div>
+                        </div>
+                      )}
+                      {entry.until && (
+                        <div>
+                          <span className="font-medium text-gray-600">Until:</span>
+                          <div className="text-gray-800">
+                            {new Date(entry.until.toDate()).toLocaleString()}
+                          </div>
+                        </div>
+                      )}
+                      {entry.notes && (
+                        <div className="col-span-2">
+                          <span className="font-medium text-gray-600">Notes:</span>
+                          <div className="text-gray-800">{entry.notes}</div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Student Point of Contact Card */}

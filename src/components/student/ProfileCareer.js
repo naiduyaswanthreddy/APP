@@ -1,8 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { auth, db } from "../../firebase";
-import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from "firebase/firestore";
-import { ToastContainer, toast } from "react-toastify";
-import "react-toastify/dist/ReactToastify.css";
+import { doc, getDoc, setDoc, updateDoc, serverTimestamp, collection, getDocs, query, where } from "firebase/firestore";
+import { toast } from "react-toastify";
 import { useNavigate, Link } from "react-router-dom";
 import { 
   User, Edit2, Check, Shield, Target, 
@@ -13,66 +12,51 @@ import {
   CreditCard, MessageCircle
 } from "lucide-react";
 
+// Charts for Tracker
+import { Bar } from 'react-chartjs-2';
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  BarElement,
+  Title,
+  Tooltip,
+  Legend,
+} from 'chart.js';
+
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  BarElement,
+  Title,
+  Tooltip,
+  Legend
+);
+
 const ProfileCareer = () => {
   const navigate = useNavigate();
   const [isEditing, setIsEditing] = useState(false);
-  const [activeTab, setActiveTab] = useState("offers");
+  const [activeTab, setActiveTab] = useState("appliedJobs");
   const [userData, setUserData] = useState({
     // Offers
-    offers: [
-      // Sample data structure for offers
-      {
-        id: 1,
-        companyName: "",
-        roleOffered: "",
-        ctc: "",
-        offerLetterLink: "",
-        tpRemarks: ""
-      }
-    ],
+    offers: [],
     
     // Payments
-    payments: [
-      // Sample data structure for payments
-      {
-        id: 1,
-        type: "", // e.g., "Registration Fee", "Placement Training"
-        amount: "",
-        status: "", // "Paid", "Pending", "Overdue"
-        dueDate: "",
-        paidDate: "",
-        receiptLink: ""
-      }
-    ],
+    payments: [],
     
     // Feedbacks
-    feedbacks: [
-      // Sample data structure for feedbacks
-      {
-        id: 1,
-        type: "", // e.g., "Resume Review", "Interview Feedback", "Training Feedback"
-        from: "", // e.g., "Mentor", "Company", "Admin"
-        date: "",
-        content: "",
-        rating: 0 // 1-5 scale if applicable
-      }
-    ],
+    feedbacks: [],
     
     // Work Experience
-    workExperience: [
-      // Sample data structure for work experience
-      {
-        id: 1,
-        company: "",
-        role: "",
-        type: "", // "Internship", "Freelance", "Part-time", "Full-time"
-        startDate: "",
-        endDate: "",
-        description: "",
-        proofLink: ""
-      }
-    ]
+    workExperience: [],
+    
+    // Applied Jobs
+    appliedJobs: []
   });
+
+  // Derived tracker state
+  const [applicationsRaw, setApplicationsRaw] = useState([]);
+  const [jobsMapState, setJobsMapState] = useState({});
 
   useEffect(() => {
     fetchUserProfile();
@@ -81,20 +65,98 @@ const ProfileCareer = () => {
   const fetchUserProfile = async () => {
     const user = auth.currentUser;
     if (user) {
-      const studentRef = doc(db, "students", user.uid);
-      const studentSnap = await getDoc(studentRef);
-      
-      if (studentSnap.exists()) {
-        const data = studentSnap.data();
+      try {
+        // Fetch student profile data
+        const studentRef = doc(db, "students", user.uid);
+        const studentSnap = await getDoc(studentRef);
         
-        // Update userData with data from Firestore
-        setUserData(prev => ({
-          ...prev,
-          offers: data.offers || [],
-          payments: data.payments || [],
-          feedbacks: data.feedbacks || [],
-          workExperience: data.workExperience || []
-        }));
+        // Fetch applied jobs data using correct identifiers
+        const applicationsRef = collection(db, "applications");
+        let rollNumber = null;
+        if (studentSnap.exists()) {
+          const sdata = studentSnap.data();
+          rollNumber = sdata?.rollNumber || sdata?.roll_number || sdata?.student_rollNumber || null;
+        }
+
+        // Run queries for both possible identifier fields and merge results
+        const appsByUidSnap = await getDocs(query(applicationsRef, where("student_id", "==", user.uid)));
+        const appsByRollSnap = rollNumber
+          ? await getDocs(query(applicationsRef, where("student_rollNumber", "==", rollNumber)))
+          : { forEach: () => {}, empty: true };
+
+        // Build a unique map of applications by doc.id
+        const appDocs = new Map();
+        appsByUidSnap.forEach(d => appDocs.set(d.id, d));
+        appsByRollSnap.forEach(d => appDocs.set(d.id, d));
+        
+        // Fetch jobs data to get job details
+        const jobsRef = collection(db, "jobs");
+        const jobsSnap = await getDocs(jobsRef);
+        const jobsMap = {};
+        jobsSnap.forEach(doc => {
+          jobsMap[doc.id] = { id: doc.id, ...doc.data() };
+        });
+        
+        // Process applications with job details
+        const appliedJobs = [];
+        const rawApps = [];
+        const normalizeStatus = (s) => {
+          const raw = (s || 'applied').toString().toLowerCase().replace(/\s+/g, '_');
+          if (raw === 'pending' || raw === 'applied') return 'applied';
+          if (raw.startsWith('shortlist')) return 'shortlisted';
+          if (raw.startsWith('interview') || raw.includes('round') || raw.includes('hr') || raw.includes('technical')) return 'selected';
+          if (raw.startsWith('offer') || ['hired','placed','offer_accepted'].includes(raw)) return 'offered';
+          if (raw.startsWith('reject') || raw.includes('declined') || raw === 'offer_rejected') return 'rejected';
+          return raw;
+        };
+
+        appDocs.forEach((doc) => {
+          const appData = doc.data();
+          const normalizedStatus = normalizeStatus(appData.status);
+          const jobId = appData.jobId || appData.job_id;
+          const updatedAt = appData.updatedAt || appData.updated_at || appData.statusUpdatedAt || appData.appliedAt || appData.appliedDate || appData.applied_at || appData.createdAt;
+          rawApps.push({ id: doc.id, ...appData, jobId, status: normalizedStatus, updatedAt });
+          const jobData = jobsMap[jobId] || {};
+          const jobSnapshot = appData.job || {};
+          appliedJobs.push({
+            id: doc.id,
+            applicationId: doc.id,
+            jobId: jobId,
+            companyName: jobData.companyName || jobData.company || jobData.company_name || jobSnapshot.company || 'Unknown Company',
+            jobTitle: jobData.jobTitle || jobData.position || jobData.title || jobSnapshot.position || 'Unknown Position',
+            appliedDate: appData.appliedAt || appData.appliedDate || appData.applied_at || appData.createdAt,
+            status: normalizedStatus,
+            ctc: jobData.ctc || jobData.salary || jobSnapshot.ctc || jobSnapshot.salary || 'Not specified',
+            location: jobData.location || jobData.jobLocation || jobSnapshot.location || jobSnapshot.workMode || 'Not specified',
+            jobType: jobData.jobType || jobData.jobTypes || jobSnapshot.jobType || jobSnapshot.jobTypes || 'Full-time'
+          });
+        });
+        
+        if (studentSnap.exists()) {
+          const data = studentSnap.data();
+          
+          // Update userData with data from Firestore
+          setUserData(prev => ({
+            ...prev,
+            offers: data.offers || [],
+            payments: data.payments || [],
+            feedbacks: data.feedbacks || [],
+            workExperience: data.workExperience || [],
+            appliedJobs: appliedJobs
+          }));
+          setApplicationsRaw(rawApps);
+          setJobsMapState(jobsMap);
+        } else {
+          setUserData(prev => ({
+            ...prev,
+            appliedJobs: appliedJobs
+          }));
+          setApplicationsRaw(rawApps);
+          setJobsMapState(jobsMap);
+        }
+      } catch (error) {
+        console.error("Error fetching profile data:", error);
+        toast.error("Failed to load profile data");
       }
     }
   };
@@ -238,11 +300,255 @@ const ProfileCareer = () => {
 
   // Tabs for the profile page
   const profileTabs = [
+    { id: "appliedJobs", label: "Applied Jobs", icon: <FileText size={16} /> },
+    { id: "tracker", label: "Tracker", icon: <Target size={16} /> },
     { id: "offers", label: "Offers", icon: <Briefcase size={16} /> },
     { id: "payments", label: "Payments", icon: <CreditCard size={16} /> },
     { id: "feedbacks", label: "Feedbacks", icon: <MessageCircle size={16} /> },
     { id: "workExperience", label: "Work Experience", icon: <Briefcase size={16} /> },
   ];
+
+  // Helpers
+  const safeToDate = (d) => {
+    try {
+      if (!d) return null;
+      if (typeof d.toDate === 'function') return d.toDate();
+      const dt = new Date(d);
+      return isNaN(dt.getTime()) ? null : dt;
+    } catch { return null; }
+  };
+
+  // Build funnel stats: Applied = total applications; others by current status
+  const statusOrder = ["applied", "shortlisted", "selected", "offered", "rejected"];
+  const appliedTotal = applicationsRaw.length;
+  const shortlistedCount = applicationsRaw.filter(a => (a.status || 'applied') === 'shortlisted').length;
+  const selectedCount = applicationsRaw.filter(a => (a.status || 'applied') === 'selected').length;
+  const offeredCount = applicationsRaw.filter(a => (a.status || 'applied') === 'offered').length;
+  const rejectedCount = applicationsRaw.filter(a => (a.status || 'applied') === 'rejected').length;
+  const statusCounts = [appliedTotal, shortlistedCount, selectedCount, offeredCount, rejectedCount];
+  const funnelData = {
+    labels: ["Applied", "Shortlisted", "Selected", "Offers", "Rejected"],
+    datasets: [{
+      label: 'Applications',
+      data: [statusCounts[0], statusCounts[1], statusCounts[2], statusCounts[3], statusCounts[4]],
+      backgroundColor: [
+        'rgba(59, 130, 246, 0.6)',
+        'rgba(250, 204, 21, 0.6)',
+        'rgba(168, 85, 247, 0.6)',
+        'rgba(16, 185, 129, 0.6)',
+        'rgba(239, 68, 68, 0.6)'
+      ],
+      borderColor: [
+        'rgba(59, 130, 246, 1)',
+        'rgba(250, 204, 21, 1)',
+        'rgba(168, 85, 247, 1)',
+        'rgba(16, 185, 129, 1)',
+        'rgba(239, 68, 68, 1)'
+      ],
+      borderWidth: 1,
+      borderRadius: 6,
+    }]
+  };
+
+  const renderTrackerTab = () => {
+    // Build timeline from applicationsRaw joined with jobsMapState
+    const timeline = [...applicationsRaw]
+      .map(app => {
+        const job = jobsMapState[app.jobId] || {};
+        const jobSnapshot = app.job || {};
+        return {
+          id: app.id,
+          company: job.companyName || job.company || job.company_name || jobSnapshot.company || 'Unknown Company',
+          position: job.jobTitle || job.position || job.title || jobSnapshot.position || 'Unknown Position',
+          status: app.status || 'applied',
+          date: safeToDate(app.updatedAt || app.appliedAt || app.appliedDate || app.createdAt)
+        };
+      })
+      .filter(item => !!item)
+      .sort((a, b) => (b.date?.getTime() || 0) - (a.date?.getTime() || 0))
+      .slice(0, 6);
+
+    const getStatusColor = (status) => ({
+      applied: 'bg-blue-500',
+      shortlisted: 'bg-yellow-500',
+      selected: 'bg-purple-500',
+      offered: 'bg-green-500',
+      rejected: 'bg-red-500',
+    }[status] || 'bg-gray-500');
+
+    const getStatusText = (status) => ({
+      applied: 'Applied to',
+      shortlisted: 'Shortlisted by',
+      selected: 'Selected by',
+      offered: 'Offer from',
+      rejected: 'Rejected by',
+    }[status] || 'Update on');
+
+    return (
+      <div className="space-y-8">
+        <div className="bg-white rounded-lg shadow-md p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold">Application Funnel</h3>
+            <div className="text-sm text-gray-500">Total: {applicationsRaw.length}</div>
+          </div>
+          <div className="h-64">
+            <Bar 
+              data={funnelData}
+              options={{
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } }
+              }}
+            />
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mt-6">
+            <div className="bg-blue-50 p-3 rounded-lg text-center">
+              <p className="text-sm text-gray-600">Applied</p>
+              <p className="text-xl font-bold text-blue-600">{statusCounts[0]}</p>
+            </div>
+            <div className="bg-yellow-50 p-3 rounded-lg text-center">
+              <p className="text-sm text-gray-600">Shortlisted</p>
+              <p className="text-xl font-bold text-yellow-600">{statusCounts[1]}</p>
+            </div>
+            <div className="bg-purple-50 p-3 rounded-lg text-center">
+              <p className="text-sm text-gray-600">Selected</p>
+              <p className="text-xl font-bold text-purple-600">{statusCounts[2]}</p>
+            </div>
+            <div className="bg-green-50 p-3 rounded-lg text-center">
+              <p className="text-sm text-gray-600">Offers</p>
+              <p className="text-xl font-bold text-green-600">{statusCounts[3]}</p>
+            </div>
+            <div className="bg-red-50 p-3 rounded-lg text-center">
+              <p className="text-sm text-gray-600">Rejected</p>
+              <p className="text-xl font-bold text-red-600">{statusCounts[4]}</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-lg shadow-md p-6">
+          <h3 className="text-lg font-semibold mb-4">Application Timeline</h3>
+          <div className="relative">
+            <div className="absolute left-4 top-0 bottom-0 w-0.5 bg-gray-200"></div>
+            <div className="ml-12 space-y-8">
+              {timeline.map((item) => (
+                <div key={item.id} className="relative">
+                  <div className={`absolute -left-12 mt-1.5 h-4 w-4 rounded-full border border-white ${getStatusColor(item.status)}`}></div>
+                  <div className="mb-1 flex items-center justify-between">
+                    <h4 className="text-md font-semibold">{getStatusText(item.status)} {item.company}</h4>
+                    <p className="text-xs text-gray-500">{item.date ? item.date.toLocaleDateString() : 'N/A'}</p>
+                  </div>
+                  <p className="text-sm text-gray-600">{item.position}</p>
+                </div>
+              ))}
+              {timeline.length === 0 && (
+                <p className="text-gray-500 text-center">No recent activity.</p>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // Render the applied jobs tab content
+  const renderAppliedJobsTab = () => {
+    const formatDate = (date) => {
+      if (!date) return 'Not available';
+      try {
+        if (date.toDate) {
+          return date.toDate().toLocaleDateString();
+        }
+        return new Date(date).toLocaleDateString();
+      } catch (error) {
+        return 'Invalid date';
+      }
+    };
+
+    const getStatusBadge = (status) => {
+      const statusColors = {
+        'applied': 'bg-blue-100 text-blue-800',
+        'shortlisted': 'bg-yellow-100 text-yellow-800',
+        'selected': 'bg-purple-100 text-purple-800',
+        'offered': 'bg-green-100 text-green-800',
+        'rejected': 'bg-red-100 text-red-800',
+        'withdrawn': 'bg-gray-100 text-gray-800'
+      };
+      
+      return (
+        <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusColors[status] || 'bg-gray-100 text-gray-800'}`}>
+          {status ? status.charAt(0).toUpperCase() + status.slice(1) : 'Applied'}
+        </span>
+      );
+    };
+
+    return (
+      <div className="space-y-8">
+        <div className="bg-white rounded-lg shadow-md p-6">
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="text-lg font-semibold">My Job Applications</h3>
+            <div className="text-sm text-gray-600">
+              Total Applications: {userData.appliedJobs.length}
+            </div>
+          </div>
+          
+          {userData.appliedJobs.length > 0 ? (
+            <div className="space-y-4">
+              {userData.appliedJobs.map((job) => (
+                <div key={job.id} className="border rounded-lg p-4 hover:shadow-md transition-shadow">
+                  <div className="flex justify-between items-start mb-2">
+                    <div>
+                      <h4 className="font-medium text-lg text-gray-900">{job.companyName}</h4>
+                      <p className="text-gray-600">{job.jobTitle}</p>
+                    </div>
+                    <div className="text-right">
+                      {getStatusBadge(job.status)}
+                      <p className="text-sm text-gray-500 mt-1">Applied: {formatDate(job.appliedDate)}</p>
+                    </div>
+                  </div>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-3">
+                    <div>
+                      <span className="text-sm font-medium text-gray-700">CTC:</span>
+                      <p className="text-sm text-gray-600">{job.ctc}</p>
+                    </div>
+                    <div>
+                      <span className="text-sm font-medium text-gray-700">Location:</span>
+                      <p className="text-sm text-gray-600">{job.location}</p>
+                    </div>
+                    <div>
+                      <span className="text-sm font-medium text-gray-700">Job Type:</span>
+                      <p className="text-sm text-gray-600">{job.jobType}</p>
+                    </div>
+                  </div>
+                  
+                  <div className="mt-3 flex justify-end">
+                    <button
+                      onClick={() => navigate(`/student/job-details/${job.jobId}`)}
+                      className="text-blue-600 hover:text-blue-800 text-sm flex items-center gap-1"
+                    >
+                      <Eye size={14} />
+                      View Job Details
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-center py-8">
+              <FileText size={48} className="mx-auto text-gray-300 mb-4" />
+              <p className="text-gray-500 mb-4">No job applications found.</p>
+              <button
+                onClick={() => navigate('/student/job-posts')}
+                className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+              >
+                Browse Jobs
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
 
   // Render the offers tab content
   const renderOffersTab = () => {
@@ -761,7 +1067,6 @@ const ProfileCareer = () => {
 
   return (
     <div className="max-w-7xl mx-auto px-3 sm:px-4">
-      <ToastContainer position="top-right" autoClose={3000} />
       
    
       
@@ -785,6 +1090,8 @@ const ProfileCareer = () => {
       
       {/* Tab Content */}
       <div className="mb-8">
+        {activeTab === "appliedJobs" && renderAppliedJobsTab()}
+        {activeTab === "tracker" && renderTrackerTab()}
         {activeTab === "offers" && renderOffersTab()}
         {activeTab === "payments" && renderPaymentsTab()}
         {activeTab === "feedbacks" && renderFeedbacksTab()}

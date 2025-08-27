@@ -11,6 +11,35 @@ sgMail.setApiKey(functions.config().sendgrid.api_key || process.env.SENDGRID_API
 
 const messaging = admin.messaging();
 
+// Rate limiting utility
+class RateLimiter {
+  constructor() {
+    this.requests = new Map();
+  }
+
+  isAllowed(key, maxRequests = 10, windowMs = 60000) {
+    const now = Date.now();
+    const windowStart = now - windowMs;
+    
+    if (!this.requests.has(key)) {
+      this.requests.set(key, []);
+    }
+    
+    const userRequests = this.requests.get(key);
+    const validRequests = userRequests.filter(timestamp => timestamp > windowStart);
+    
+    if (validRequests.length >= maxRequests) {
+      return false;
+    }
+    
+    validRequests.push(now);
+    this.requests.set(key, validRequests);
+    return true;
+  }
+}
+
+const rateLimiter = new RateLimiter();
+
 // Function to save FCM token for a student
 exports.saveFCMToken = functions.https.onCall(async (data, context) => {
   try {
@@ -26,12 +55,12 @@ exports.saveFCMToken = functions.https.onCall(async (data, context) => {
       throw new functions.https.HttpsError('invalid-argument', 'FCM token is required');
     }
 
-    // Save FCM token to students collection
-    await db.collection('students').doc(uid).update({
+    // Save FCM token to students collection (create doc if missing)
+    await db.collection('students').doc(uid).set({
       fcmToken: fcmToken,
       pushNotificationsEnabled: enabled !== undefined ? enabled : true,
       lastTokenUpdate: admin.firestore.FieldValue.serverTimestamp()
-    });
+    }, { merge: true });
 
     return { success: true, message: 'FCM token saved successfully' };
   } catch (error) {
@@ -321,18 +350,18 @@ exports.cleanupFCMToken = functions.https.onCall(async (data, context) => {
     const uid = context.auth.uid;
 
     if (enabled === false) {
-      // Remove FCM token when notifications are disabled
-      await db.collection('students').doc(uid).update({
+      // Remove FCM token when notifications are disabled (create doc if missing)
+      await db.collection('students').doc(uid).set({
         fcmToken: null,
         pushNotificationsEnabled: false,
         lastTokenUpdate: admin.firestore.FieldValue.serverTimestamp()
-      });
+      }, { merge: true });
     } else {
       // Re-enable notifications (token will be set when user re-enables)
-      await db.collection('students').doc(uid).update({
+      await db.collection('students').doc(uid).set({
         pushNotificationsEnabled: true,
         lastTokenUpdate: admin.firestore.FieldValue.serverTimestamp()
-      });
+      }, { merge: true });
     }
 
     return { success: true, message: 'Push notification settings updated successfully' };

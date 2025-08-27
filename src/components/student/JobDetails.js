@@ -1,10 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { collection, getDocs, query, where, doc, getDoc, addDoc, serverTimestamp, updateDoc, onSnapshot, deleteDoc } from 'firebase/firestore';
+import { collection, getDocs, query, where, doc, getDoc, addDoc, serverTimestamp, updateDoc, onSnapshot, deleteDoc, runTransaction } from 'firebase/firestore';
 import { db, auth } from '../../firebase';
 import { getCurrentStudentRollNumber } from '../../utils/studentIdentity';
-import { ToastContainer, toast } from "react-toastify";
-import "react-toastify/dist/ReactToastify.css";
+import { toast } from "react-toastify";
 import { createStatusUpdateNotification, createSystemAlertNotification } from '../../utils/notificationHelpers';
 import {
   ChevronLeft,
@@ -31,6 +30,8 @@ import {
 import JobChat from './JobChat';
 import { LinkIcon } from 'lucide-react';
 import Loader from '../../loading'; // Add this import at the top
+import { ProfileSkeleton } from '../ui/SkeletonLoaders';
+import { ContentLoader, PageTransition } from '../ui/PageTransition';
 import { IndianRupee } from "lucide-react";
 
 
@@ -61,6 +62,7 @@ const JobDetails = () => {
   const [linkVisited, setLinkVisited] = useState({});
   const [applying, setApplying] = useState(false);
   const [hasApplied, setHasApplied] = useState(false);
+  const [showCelebration, setShowCelebration] = useState(false);
 
 
   useEffect(() => {
@@ -346,16 +348,42 @@ const JobDetails = () => {
     }));
   };
 
+  const triggerCelebration = () => {
+    setShowCelebration(true);
+    // Hide celebration after 3 seconds
+    setTimeout(() => {
+      setShowCelebration(false);
+    }, 3000);
+  };
+
   const handleApply = async () => {
     if (!auth.currentUser) {
       toast.error('Please login to apply for this job');
       return;
     }
 
+    // Check if student is frozen
+    try {
+      const studentDoc = await getDoc(doc(db, 'students', auth.currentUser.uid));
+      const studentData = studentDoc.data();
+      
+      if (studentData?.freezed?.active) {
+        toast.error('Your account is frozen. Contact the Placement Team for assistance.');
+        return;
+      }
+    } catch (error) {
+      console.error('Error checking freeze status:', error);
+      toast.error('Unable to verify account status. Please try again.');
+      return;
+    }
+
+    // Guard: prevent duplicate rapid submissions
+    if (applying) return;
+
     try {
       setApplying(true);
 
-      // Check if already applied
+      // Check if already applied (best-effort pre-check; final guard via transaction)
       const roll = await getCurrentStudentRollNumber();
       const appsCol = collection(db, 'applications');
       const existingApplication = await getDocs(
@@ -369,7 +397,7 @@ const JobDetails = () => {
         return;
       }
 
-      // Create application
+      // Create application transactionally with deterministic ID to avoid duplicates
       console.log('Screening answers before submission:', screeningAnswers);
       console.log('Selected job screening questions:', selectedJob.screeningQuestions);
 
@@ -385,6 +413,17 @@ const JobDetails = () => {
         }
       })();
 
+      // Initialize all rounds to 'pending' for this application
+      const initialRounds = (() => {
+        const roundsArr = Array.isArray(selectedJob?.rounds) ? selectedJob.rounds : [];
+        const roundsMap = {};
+        roundsArr.forEach((r, idx) => {
+          const name = r?.name || r?.roundName || `Round ${idx + 1}`;
+          if (name) roundsMap[name] = 'pending';
+        });
+        return roundsMap;
+      })();
+
       const applicationData = {
         jobId: jobId,
         student_id: auth.currentUser.uid,
@@ -393,19 +432,46 @@ const JobDetails = () => {
         appliedAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
         screening_answers: screeningAnswersToSave, // Save normalized screening answers
+        student: {
+          rounds: initialRounds
+        },
         job: {
           position: selectedJob.position,
           company: selectedJob.company,
           location: selectedJob.location,
-          ctc: selectedJob.ctc,
-          salary: selectedJob.salary
+          // Complete salary/compensation data from job collection
+          ctc: selectedJob.ctc || '',
+          minCtc: selectedJob.minCtc || '',
+          maxCtc: selectedJob.maxCtc || '',
+          salary: selectedJob.salary || '',
+          minSalary: selectedJob.minSalary || '',
+          maxSalary: selectedJob.maxSalary || '',
+          basePay: selectedJob.basePay || '',
+          variablePay: selectedJob.variablePay || '',
+          bonuses: selectedJob.bonuses || '',
+          compensationType: selectedJob.compensationType || '',
+          ctcUnit: selectedJob.ctcUnit || '',
+          salaryUnit: selectedJob.salaryUnit || '',
+          // Additional job details for consistency
+          jobTypes: selectedJob.jobTypes || '',
+          workMode: selectedJob.workMode || '',
+          internshipDuration: selectedJob.internshipDuration || '',
+          internshipDurationUnit: selectedJob.internshipDurationUnit || ''
         }
       };
       
       console.log('Application data being submitted:', applicationData);
 
-      const applicationRef = await addDoc(collection(db, 'applications'), applicationData);
-      console.log('Application submitted successfully with ID:', applicationRef.id);
+      const appDeterministicId = `${jobId}_${roll || auth.currentUser.uid}`;
+      await runTransaction(db, async (tx) => {
+        const appRef = doc(db, 'applications', appDeterministicId);
+        const snap = await tx.get(appRef);
+        if (snap.exists()) {
+          throw new Error('already_applied');
+        }
+        tx.set(appRef, applicationData);
+      });
+      console.log('Application submitted successfully with ID:', appDeterministicId);
       console.log('Screening answers in submitted application:', applicationData.screening_answers);
 
       // Send notification to student
@@ -431,6 +497,9 @@ const JobDetails = () => {
 
       toast.success('Application submitted successfully!');
       setHasApplied(true);
+      
+      // Trigger celebration effect
+      triggerCelebration();
       
       // Update local state
       setSelectedJob(prev => ({
@@ -657,8 +726,8 @@ const JobInfoCard = ({ icon, label, value, iconBg, iconColor }) => (
 
   if (loading) {
     return (
-      <div className="fixed top-0 left-0 right-0 bottom-0 bg-gray-100 bg-opacity-0 flex items-center justify-center z-50">
-        <Loader />
+      <div className="container mx-auto px-0 sm:px-4 py-0 max-w-6xl">
+        <ProfileSkeleton />
       </div>
     );
   }
@@ -815,8 +884,24 @@ case 'multiple-choice':
   };
 
   return (
-    <div className="container mx-auto px-0 sm:px-4 py-0 max-w-6xl">
-      <ToastContainer style={{ zIndex: 9999 }} />
+    <PageTransition>
+      <div className="container mx-auto px-0 sm:px-4 py-0 max-w-6xl">
+      
+      {/* Celebration Overlay */}
+      {showCelebration && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 pointer-events-none">
+          <div className="bg-white rounded-xl p-8 text-center shadow-2xl animate-bounce">
+            <div className="text-6xl mb-4">🎉</div>
+            <h2 className="text-2xl font-bold text-green-600 mb-2">Congratulations!</h2>
+            <p className="text-gray-700">Your application has been submitted successfully!</p>
+            <div className="mt-4 flex justify-center space-x-2">
+              <span className="text-2xl animate-pulse">✨</span>
+              <span className="text-2xl animate-pulse delay-100">🎊</span>
+              <span className="text-2xl animate-pulse delay-200">🎈</span>
+            </div>
+          </div>
+        </div>
+      )}
       
       {/* Back button */}
       <button
@@ -1605,11 +1690,9 @@ case 'multiple-choice':
                             {key === 'bondAgreement' ? 'Bond Agreement' : 
                              key === 'externalLinks' ? 'External Links' : 'Screening Questions'}
                           </span>
-                          <span className={`text-sm font-medium px-2 py-1 rounded-full ${
-                            value.completed 
-                              ? 'bg-green-100 text-green-800' 
-                              : 'bg-yellow-100 text-yellow-800'
-                          }`}>
+                          <span className={`text-sm font-medium px-2 py-1 rounded-full ${value.completed 
+                            ? 'bg-green-100 text-green-800' 
+                            : 'bg-yellow-100 text-yellow-800'}`}>
                             {value.completed ? '✓ Complete' : '⏳ Pending'}
                           </span>
                         </div>
@@ -1723,6 +1806,7 @@ case 'multiple-choice':
         </div>
       </div>
     </div>
+    </PageTransition>
   );
 };
 

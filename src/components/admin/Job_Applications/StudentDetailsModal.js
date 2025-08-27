@@ -30,9 +30,10 @@ const StudentDetailsModal = ({ student, onClose }) => {
   const statusConfig = {
     pending: { label: '⏳ Under Review', class: 'bg-gray-100 text-gray-800', color: 'rgba(156, 163, 175, 0.7)' },
     shortlisted: { label: '✅ Shortlisted', class: 'bg-green-100 text-green-800', color: 'rgba(5, 150, 105, 0.7)' },
-    waitlisted: { label: '🟡 On Hold / Waitlisted', class: 'bg-yellow-100 text-yellow-800', color: 'rgba(245, 158, 11, 0.7)' },
+    waitlisted: { label: '🟡 Waitlisted', class: 'bg-yellow-100 text-yellow-800', color: 'rgba(245, 158, 11, 0.7)' },
     interview_scheduled: { label: '📅 Interview Scheduled', class: 'bg-blue-100 text-blue-800', color: 'rgba(59, 130, 246, 0.7)' },
     selected: { label: '🌟 Selected', class: 'bg-purple-100 text-purple-800', color: 'rgba(139, 92, 246, 0.7)' },
+    placed: { label: '🎉 Placed', class: 'bg-blue-100 text-blue-800', color: 'rgba(59, 130, 246, 0.7)' },
     rejected: { label: '⚠️ Rejected', class: 'bg-red-100 text-red-800', color: 'rgba(239, 68, 68, 0.7)' }
   };
 

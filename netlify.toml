@@ -1,0 +1,16 @@
+[build]
+  command = "npm run build"
+  publish = "build"
+
+# Ensure the service worker and other root files are served as-is
+[[redirects]]
+  from = "/firebase-messaging-sw.js"
+  to = "/firebase-messaging-sw.js"
+  status = 200
+  force = true
+
+# Single Page App fallback so deep links work on refresh
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

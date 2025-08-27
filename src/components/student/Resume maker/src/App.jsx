@@ -145,7 +145,7 @@ export default function App() {
         [componentName]: false
       };
       localStorage.setItem('editDeleteVisible', JSON.stringify(newState));
-      window.location.reload();
+      // Removed window.location.reload() - state management handles updates
       return newState;
     });
   };

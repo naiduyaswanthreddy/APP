@@ -9,6 +9,62 @@ import NoData from '../../ui/NoData';
 import { FixedSizeList as List } from 'react-window';
 import AutoSizer from 'react-virtualized-auto-sizer';
 
+// Dev flag to gate debug logs
+const __DEV__ = process.env.NODE_ENV !== 'production';
+
+// Fixed column order independent of customization or toggle order
+// Keys must match application/student field keys used in switch cases below
+const COLUMN_ORDER = [
+  'name',
+  'rollNumber',
+  'department',
+  'cgpa',
+  'email',
+  'phone',
+  'currentArrears',
+  'historyArrears',
+  'skills',
+  'tenthPercentage',
+  'twelfthPercentage',
+  'diplomaPercentage',
+  'gender',
+  'resume',
+  'predict',
+  'feedback',
+  'roundStatus',
+  'rounds'
+];
+
+const orderIndex = COLUMN_ORDER.reduce((acc, key, idx) => { acc[key] = idx; return acc; }, {});
+
+const getOrderedVisibleColumns = (visibleColumns) => {
+  // Normalize legacy key 'roundStatus' to 'rounds' and remove duplicates
+  const normalized = visibleColumns.map(c => (c === 'roundStatus' ? 'rounds' : c));
+  const input = Array.from(new Set(normalized));
+  const set = new Set();
+  const ordered = [];
+  // 1) Known columns by fixed order
+  COLUMN_ORDER.forEach(k => {
+    if (input.includes(k)) {
+      ordered.push(k);
+      set.add(k);
+    }
+  });
+  // 2) Question columns q1..qN in numeric order
+  const questionCols = input.filter(c => /^q\d+$/i.test(c) || /^question\d+$/i.test(c));
+  questionCols.sort((a, b) => {
+    const ai = parseInt(a.replace(/^[a-zA-Z]+/, ''));
+    const bi = parseInt(b.replace(/^[a-zA-Z]+/, ''));
+    return ai - bi;
+  });
+  questionCols.forEach(c => { if (!set.has(c)) { ordered.push(c); set.add(c); } });
+  // 3) Any remaining unknown keys, stable alpha
+  const remaining = input.filter(c => !set.has(c));
+  remaining.sort();
+  remaining.forEach(c => ordered.push(c));
+  return ordered;
+};
+
 // Add this new component for truncated feedback display
 const TruncatedFeedback = ({ text }) => {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -127,7 +183,8 @@ const ApplicationsTable = ({
   handleStatusUpdate,
   visibleColumns,
   currentRound,
-  screeningQuestions = []
+  screeningQuestions = [],
+  serialOffset = 0
 }) => {
 
   const [undoStack, setUndoStack] = useState([]);
@@ -137,6 +194,19 @@ const ApplicationsTable = ({
   const [editingFeedbackValue, setEditingFeedbackValue] = useState('');
   const [savingFeedback, setSavingFeedback] = useState(false);
   const listRef = useRef();
+
+  // Compute fixed-order visible columns once per change
+  const orderedVisibleColumns = useMemo(
+    () => getOrderedVisibleColumns(visibleColumns),
+    [visibleColumns]
+  );
+
+  // Local screening questions state derived from prop
+  const [localScreeningQuestions, setLocalScreeningQuestions] = useState(screeningQuestions || []);
+  useEffect(() => {
+    setLocalScreeningQuestions(screeningQuestions || []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screeningQuestions]);
 
   // Calculate skill match percentage
   const calculateSkillMatch = (studentSkills = [], jobSkills = []) => {
@@ -179,8 +249,13 @@ const ApplicationsTable = ({
           />
         </div>
 
-        {/* Dynamic cells based on visible columns */}
-        {visibleColumns.map((column) => {
+        {/* Serial number cell */}
+        <div className="w-16 p-3 text-center text-gray-700">
+          {serialOffset + index + 1}
+        </div>
+
+        {/* Dynamic cells based on visible columns in fixed order */}
+        {orderedVisibleColumns.map((column) => {
           switch (column) {
             case 'name':
               return (
@@ -415,12 +490,10 @@ const ApplicationsTable = ({
       toast.error('Failed to update bulk status');
     }
   };
-
-  // Get screening questions from the first application's job data
   // Assuming all applications in filteredApplications are for the same job
   // Replace the current screeningQuestions code with this improved version
   // that handles the case when job data might not be available
-  // Add this useEffect to fetch and set screening questions
+  // Removed verbose debug effect for screening questions to avoid console spam on props identity changes
   useEffect(() => {
     const fetchScreeningQuestions = async () => {
       if (filteredApplications.length > 0) {
@@ -428,7 +501,7 @@ const ApplicationsTable = ({
         
         // If the job data is already available, use it
         if (firstApp.job?.screeningQuestions) {
-          // setScreeningQuestions(firstApp.job.screeningQuestions); // This line is removed
+          setLocalScreeningQuestions(firstApp.job.screeningQuestions);
           return;
         }
         
@@ -441,12 +514,12 @@ const ApplicationsTable = ({
             if (jobSnap.exists()) {
               const jobData = jobSnap.data();
               if (jobData.screeningQuestions && jobData.screeningQuestions.length > 0) {
-                console.log("Fetched screening questions:", jobData.screeningQuestions);
-                // setScreeningQuestions(jobData.screeningQuestions); // This line is removed
+                __DEV__ && console.debug("Fetched screening questions:", jobData.screeningQuestions);
+                setLocalScreeningQuestions(jobData.screeningQuestions);
               }
             }
           } catch (error) {
-            console.error("Error fetching job data:", error);
+            __DEV__ && console.error("Error fetching job data:", error);
           }
         }
       }
@@ -454,15 +527,7 @@ const ApplicationsTable = ({
     
     fetchScreeningQuestions();
   }, [filteredApplications]);
-  // Add console logs to debug screening questions
-  useEffect(() => {
-    console.log("Screening Questions:", screeningQuestions);
-    console.log("First application:", filteredApplications[0]);
-    console.log("First application job:", filteredApplications[0]?.job);
-    if (filteredApplications.length > 0) {
-      console.log("First application screening_answers:", filteredApplications[0].screening_answers);
-    }
-  }, [screeningQuestions, filteredApplications]);
+  // Removed verbose debug effect for screening questions to avoid console spam on props identity changes
 
   // Handler to start editing feedback
   const handleEditFeedback = (application) => {
@@ -548,12 +613,14 @@ const ApplicationsTable = ({
     }
   };
 
-  // Handler to save feedback on Enter key press
+  // Handle key events inside feedback textarea: Enter to save, Esc to cancel
   const handleKeyPressSaveFeedback = async (e, applicationId) => {
     if (e.key === 'Enter') {
-      e.preventDefault(); // Prevent new line in input/textarea
-      console.log("Enter key pressed, calling handleSaveButtonClick");
-      await handleSaveButtonClick(applicationId); // Call the main save function
+      e.preventDefault();
+      await handleSaveButtonClick(applicationId);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      setEditingFeedbackId(null);
     }
   };
 
@@ -576,13 +643,20 @@ const ApplicationsTable = ({
       </th>
     );
 
-    // Add dynamic headers based on visibleColumns
-    visibleColumns.forEach(column => {
-      if (column.startsWith('q')) {
-        const idx = parseInt(column.replace('q', '')) - 1;
-        const q = screeningQuestions[idx];
+    // Fixed Serial No column
+    headers.push(
+      <th key="sno" scope="col" className="w-16 px-4 py-3 text-center text-xs font-medium bg-teal-100 uppercase tracking-wider">
+        S.No
+      </th>
+    );
+
+    // Add dynamic headers based on orderedVisibleColumns
+    orderedVisibleColumns.forEach(column => {
+      if (/^q\d+$/i.test(column) || /^question\d+$/i.test(column)) {
+        const idx = parseInt(column.replace(/^[a-zA-Z]+/, '')) - 1;
+        const q = localScreeningQuestions[idx];
         headers.push(
-          <th key={column} scope="col" className="w-48 px-4 py-3 text-left text-xs font-medium bg-teal-100 uppercase tracking-wider">
+          <th key={column} scope="col" className="w-48 px-4 py-3 text-center text-xs font-medium bg-teal-100 uppercase tracking-wider">
             {q ? q.question || `Q${idx + 1}` : `Q${idx + 1}`}
           </th>
         );
@@ -717,28 +791,28 @@ const ApplicationsTable = ({
           break;
         case 'question1':
           headers.push(
-            <th key="question1" scope="col" className="w-48 px-4 py-3 text-left text-xs font-medium bg-teal-100 uppercase tracking-wider">
+            <th key="question1" scope="col" className="w-48 px-4 py-3 text-center text-xs font-medium bg-teal-100 uppercase tracking-wider">
               Question 1
             </th>
           );
           break;
         case 'question2':
           headers.push(
-            <th key="question2" scope="col" className="w-48 px-4 py-3 text-left text-xs font-medium bg-teal-100 uppercase tracking-wider">
+            <th key="question2" scope="col" className="w-48 px-4 py-3 text-center text-xs font-medium bg-teal-100 uppercase tracking-wider">
               Question 2
             </th>
           );
           break;
         case 'feedback':
           headers.push(
-            <th key="feedback" scope="col" className="w-32 px-4 py-3 text-left text-xs font-medium bg-teal-100 uppercase tracking-wider">
+            <th key="feedback" scope="col" className="w-[32rem] px-4 py-3 text-left text-xs font-medium bg-teal-100 uppercase tracking-wider">
               Feedback
             </th>
           );
           break;
         case 'rounds':
           headers.push(
-            <th key="rounds" scope="col" className="w-48 px-4 py-3 text-left text-xs font-medium bg-teal-100 uppercase tracking-wider">
+            <th key="rounds" scope="col" className="w-48 px-4 py-3 text-center text-xs font-medium bg-teal-100 uppercase tracking-wider">
               Round Status 
             </th>
           );
@@ -757,7 +831,7 @@ const ApplicationsTable = ({
     
     // Always include checkbox cell
     cells.push(
-      <td key="checkbox" className="px-4 py-4">
+      <td key="checkbox" className="w-8 px-4 py-4">
         <input
           type="checkbox"
           className="h-4 w-4 text-blue-600 border-gray-300 rounded"
@@ -774,15 +848,28 @@ const ApplicationsTable = ({
       </td>
     );
 
-    // Add dynamic cells based on visibleColumns
-    visibleColumns.forEach(column => {
-      if (column.startsWith('q')) {
-        const idx = parseInt(column.replace('q', '')) - 1;
+    // Fixed Serial No cell
+    const vIndex = typeof application.virtualIndex === 'number' ? application.virtualIndex : 0;
+    cells.push(
+      <td key="sno" className="w-16 px-4 py-4 whitespace-nowrap text-center">
+        {serialOffset + vIndex + 1}
+      </td>
+    );
+
+    // Add dynamic cells based on orderedVisibleColumns
+    orderedVisibleColumns.forEach(column => {
+      // Skip 'sno' if ever present in visibleColumns by mistake
+      if (column === 'sno') return;
+      if (/^q\d+$/i.test(column) || /^question\d+$/i.test(column)) {
+        const idx = parseInt(column.replace(/^[a-zA-Z]+/, '')) - 1;
         const ans = application.screening_answers && application.screening_answers[idx];
-        console.log(`Screening answer for Q${idx + 1}:`, ans, 'from application:', application.id);
         cells.push(
-          <td key={column} className="px-4 py-4 whitespace-nowrap text-center">
-            {ans !== undefined && ans !== null && ans !== '' ? ans : <span className="text-gray-400">N/A</span>}
+          <td key={column} className="w-48 px-4 py-4 text-center">
+            {ans !== undefined && ans !== null && ans !== '' ? (
+              <TruncatedAnswer text={ans} />
+            ) : (
+              <span className="text-gray-400">N/A</span>
+            )}
           </td>
         );
         return;
@@ -790,7 +877,7 @@ const ApplicationsTable = ({
       switch (column) {
         case 'name':
           cells.push(
-            <td key="name" className="px-4 py-4 whitespace-nowrap">
+            <td key="name" className="w-40 px-4 py-4 whitespace-nowrap">
               <div className="flex items-center">
                 <div className="ml-0">
                   <div className="text-sm font-medium text-gray-900 cursor-pointer hover:text-blue-600"
@@ -804,144 +891,133 @@ const ApplicationsTable = ({
           break;
         case 'rollNumber':
           cells.push(
-            <td key="rollNumber" className="px-4 py-4 whitespace-nowrap">
-              <div className="text-xs text-gray-500">{application.student.rollNumber}</div>
+            <td key="rollNumber" className="w-32 px-4 py-4 whitespace-nowrap text-center">
+              {application.student?.rollNumber || 'N/A'}
             </td>
           );
           break;
         case 'department':
           cells.push(
-            <td key="department" className="px-4 py-4 whitespace-nowrap text-center">
-              <div className="text-sm text-gray-900">{application.student.department}</div>
+            <td key="department" className="w-20 px-4 py-4 whitespace-nowrap text-center">
+              {application.student?.department || 'N/A'}
+            </td>
+          );
+          break;
+        case 'batch':
+          cells.push(
+            <td key="batch" className="w-24 px-4 py-4 whitespace-nowrap text-center">
+              {application.student?.batch || 'N/A'}
             </td>
           );
           break;
         case 'cgpa':
           cells.push(
-            <td key="cgpa" className="px-4 py-4 whitespace-nowrap text-center">
-              <span className={`inline-flex text-sm font-medium ${
-                parseFloat(application.student.cgpa) >= 8.0 ? 'text-green-600' :
-                parseFloat(application.student.cgpa) >= 7.0 ? 'text-yellow-600' :
-                'text-red-600'
-              }`}>
-                {parseFloat(application.student.cgpa).toFixed(1)}
-              </span>
+            <td key="cgpa" className="w-16 px-4 py-4 whitespace-nowrap text-center">
+              {application.student?.cgpa ?? 'N/A'}
             </td>
           );
           break;
         case 'email':
           cells.push(
-            <td key="email" className="px-4 py-4 whitespace-nowrap">
-              <div className="text-sm text-gray-900">{application.student.email}</div>
+            <td key="email" className="w-48 px-4 py-4 whitespace-nowrap">
+              {application.student?.email ? (
+                <a
+                  href={`mailto:${application.student.email}`}
+                  className="text-blue-600 hover:underline"
+                  title={application.student.email}
+                >
+                  <span className="inline-block max-w-[10rem] truncate align-bottom">
+                    {application.student.email}
+                  </span>
+                </a>
+              ) : (
+                'N/A'
+              )}
             </td>
           );
           break;
         case 'phone':
           cells.push(
-            <td key="phone" className="px-4 py-4 whitespace-nowrap">
-              <div className="text-sm text-gray-900">{application.student.phone}</div>
+            <td key="phone" className="w-32 px-4 py-4 whitespace-nowrap">
+              {application.student?.phone || application.student?.phoneNumber || 'N/A'}
             </td>
           );
           break;
         case 'currentArrears':
           cells.push(
-            <td key="currentArrears" className="px-4 py-4 whitespace-nowrap text-center">
-              <span className={`inline-flex text-sm font-medium ${
-                parseInt(application.student.currentArrears) === 0 ? 'text-green-600' :
-                parseInt(application.student.currentArrears) <= 2 ? 'text-yellow-600' :
-                'text-red-600'
-              }`}>
-                {application.student.currentArrears}
-              </span>
+            <td key="currentArrears" className="w-24 px-4 py-4 whitespace-nowrap text-center">
+              {application.student?.currentArrears ?? 'N/A'}
             </td>
           );
           break;
         case 'historyArrears':
           cells.push(
-            <td key="historyArrears" className="px-4 py-4 whitespace-nowrap text-center">
-              <span className={`inline-flex text-sm font-medium ${
-                parseInt(application.student.historyArrears) === 0 ? 'text-green-600' :
-                parseInt(application.student.historyArrears) <= 2 ? 'text-yellow-600' :
-                'text-red-600'
-              }`}>
-                {application.student.historyArrears}
-              </span>
+            <td key="historyArrears" className="w-24 px-4 py-4 whitespace-nowrap text-center">
+              {application.student?.historyArrears ?? 'N/A'}
             </td>
           );
           break;
         case 'skills':
-          cells.push(
-            <td key="skills" className="px-4 py-4 whitespace-normal">
-              <div className="text-sm text-gray-900">
-                {Array.isArray(application.student.skills) && application.student.skills.length > 0 
-                  ? application.student.skills.slice(0, 3).join(', ') + (application.student.skills.length > 3 ? '...' : '')
-                  : 'N/A'
-                }
-              </div>
-            </td>
-          );
+          {
+            const studentSkills = Array.isArray(application.student?.skills)
+              ? application.student.skills
+              : (application.student?.skills ? String(application.student.skills).split(',').map(s => s.trim()) : []);
+            const jobSkills = application.job?.skills || application.job?.requiredSkills || [];
+            const match = calculateSkillMatch(studentSkills, jobSkills);
+            cells.push(
+              <td key="skills" className="w-48 px-4 py-4">
+                <div className="text-sm text-gray-900">{studentSkills.length ? studentSkills.join(', ') : 'N/A'}</div>
+                {jobSkills.length > 0 && (
+                  <div className="text-xs text-gray-500 mt-1">Match: {match}%</div>
+                )}
+              </td>
+            );
+          }
           break;
         case 'tenthPercentage':
           cells.push(
-            <td key="tenthPercentage" className="px-4 py-4 whitespace-nowrap text-center">
-              <div className="text-sm text-gray-900">{application.student.tenthPercentage}</div>
+            <td key="tenthPercentage" className="w-24 px-4 py-4 whitespace-nowrap text-center">
+              {application.student?.tenthPercentage ?? 'N/A'}
             </td>
           );
           break;
         case 'twelfthPercentage':
           cells.push(
-            <td key="twelfthPercentage" className="px-4 py-4 whitespace-nowrap text-center">
-              <div className="text-sm text-gray-900">{application.student.twelfthPercentage}</div>
+            <td key="twelfthPercentage" className="w-24 px-4 py-4 whitespace-nowrap text-center">
+              {application.student?.twelfthPercentage ?? 'N/A'}
             </td>
           );
           break;
         case 'diplomaPercentage':
           cells.push(
-            <td key="diplomaPercentage" className="px-4 py-4 whitespace-nowrap text-center">
-              <div className="text-sm text-gray-900">{application.student.diplomaPercentage}</div>
+            <td key="diplomaPercentage" className="w-24 px-4 py-4 whitespace-nowrap text-center">
+              {application.student?.diplomaPercentage ?? 'N/A'}
             </td>
           );
           break;
         case 'gender':
           cells.push(
-            <td key="gender" className="px-4 py-4 whitespace-nowrap text-center">
-              <div className="text-sm text-gray-900">{application.student.gender}</div>
+            <td key="gender" className="w-20 px-4 py-4 whitespace-nowrap text-center">
+              {application.student?.gender || 'N/A'}
             </td>
           );
           break;
         case 'match':
-          cells.push(
-            <td key="match" className="px-4 py-4 whitespace-nowrap text-center">
-              {(() => {
-                const matchPercentage = calculateSkillMatch(
-                  application.student?.skills || [],
-                  application.job?.requiredSkills || []
-                );
-                return (
-                  <>
-                    <div className="w-full bg-gray-200 rounded-full h-2.5" style={{ position: 'relative', zIndex: 10, overflow: 'visible' }}>
-                      <div
-                        className={`h-2.5 rounded-full ${
-                          matchPercentage >= 70 ? 'bg-green-600' :
-                          matchPercentage >= 40 ? 'bg-yellow-600' :
-                          'bg-red-600'
-                        }`}
-                        style={{ width: `${matchPercentage}%` }}
-                      ></div>
-                    </div>
-                    <span className="text-xs text-gray-500 mt-1" style={{ display: 'block', marginTop: '4px' }}>
-                      {matchPercentage}%
-                    </span>
-                  </>
-                );
-              })()}
-            </td>
-          );
+          {
+            const studentSkills = Array.isArray(application.student?.skills)
+              ? application.student.skills
+              : (application.student?.skills ? String(application.student.skills).split(',').map(s => s.trim()) : []);
+            const jobSkills = application.job?.skills || application.job?.requiredSkills || [];
+            const match = calculateSkillMatch(studentSkills, jobSkills);
+            cells.push(
+              <td key="match" className="w-24 px-4 py-4 whitespace-nowrap text-center">{match}%</td>
+            );
+          }
           break;
         case 'status':
           cells.push(
-            <td key="status" className="px-4 py-4 whitespace-nowrap text-center">
-              <span className={`px-3 py-1 rounded-full text-xs font-semibold ${statusConfig[application.status]?.class || statusConfig.pending.class}`}>
+            <td key="status" className="w-24 px-4 py-4 whitespace-nowrap text-center">
+              <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${statusConfig[application.status]?.class || statusConfig.pending.class}`}>
                 {statusConfig[application.status]?.label || 'Pending'}
               </span>
             </td>
@@ -949,145 +1025,87 @@ const ApplicationsTable = ({
           break;
         case 'actions':
           cells.push(
-            <td key="actions" className="px-4 py-4 whitespace-nowrap text-center relative">
-              <div className="relative inline-block text-left dropdown-container">
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    setDropdownPosition({
-                      top: rect.bottom + window.scrollY,
-                      left: rect.left + window.scrollX
-                    });
-                    setOpenDropdownId(openDropdownId === application.id ? null : application.id);
-                  }}
-                  className="inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-3 py-1 bg-white text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none"
-                >
-                  Actions
-                </button>
-
-                {openDropdownId === application.id && (
-                  <div
-                    className="origin-top-right absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 divide-y divide-gray-100 focus:outline-none z-50"
-                    style={{
-                      position: 'fixed',
-                      top: `${dropdownPosition.top}px`,
-                      left: `${dropdownPosition.left}px`
-                    }}
-                  >
-                    <div className="py-1">
-                      {Object.entries(statusConfig).map(([status, config]) => (
-                        <button
-                          key={status}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleStatusUpdate(application.id, status);
-                            setOpenDropdownId(null);
-                          }}
-                          className="flex items-center w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-                        >
-                          <span className="mr-2">
-                            {status === 'underReview' && ''}
-                            {status === 'shortlisted' && ''}
-                            {status === 'onHold' && ''}
-                            {status === 'interview' && ''}
-                            {status === 'selected' && ''}
-                            {status === 'rejected' && ''}
-                          </span> {config.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
+            <td key="actions" className="w-20 px-4 py-4 whitespace-nowrap text-center text-gray-400">
+              —
             </td>
           );
           break;
         case 'resume':
-          cells.push(
-            <td key="resume" className="px-4 py-4 whitespace-nowrap text-center">
-              {application.student?.resumeUrl ? (
-                <a
-                  href={application.student.resumeUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-blue-600 hover:underline"
-                >
-                  View
-                </a>
-              ) : (
-                <span className="text-gray-500">N/A</span>
-              )}
-            </td>
-          );
+          {
+            const resumeUrl = application.student?.resumeUrl || application.student?.resume || application.student?.resumeLink;
+            cells.push(
+              <td key="resume" className="w-20 px-4 py-4 whitespace-nowrap text-center">
+                {resumeUrl ? (
+                  <a href={resumeUrl} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">View</a>
+                ) : (
+                  <span className="text-gray-400">N/A</span>
+                )}
+              </td>
+            );
+          }
           break;
         case 'predict':
           cells.push(
-            <td key="predict" className="px-4 py-4 whitespace-nowrap text-center">
-              <span className="px-2 py-1 text-xs rounded-full bg-green-100 text-green-800">High</span>
-            </td>
+            <td key="predict" className="w-24 px-4 py-4 whitespace-nowrap text-center text-gray-400">N/A</td>
           );
           break;
         case 'question1':
           cells.push(
-            <td key="question1" className="px-4 py-4 whitespace-normal text-sm text-gray-900">
-              {application.screening_answers?.[0] ? (
-                <TruncatedAnswer text={application.screening_answers[0]} />
-              ) : (
-                'N/A'
-              )}
+            <td key="question1" className="w-48 px-4 py-4 text-center">
+              <TruncatedAnswer text={application.screening_answers?.[0]} />
             </td>
           );
           break;
         case 'question2':
           cells.push(
-            <td key="question2" className="px-4 py-4 whitespace-normal text-sm text-gray-900">
-              {application.screening_answers?.[1] ? (
-                <TruncatedAnswer text={application.screening_answers[1]} />
-              ) : (
-                'N/A'
-              )}
+            <td key="question2" className="w-48 px-4 py-4 text-center">
+              <TruncatedAnswer text={application.screening_answers?.[1]} />
             </td>
           );
           break;
         case 'feedback':
           cells.push(
-            <td key="feedback" className="px-4 py-4 whitespace-nowrap">
+            <td
+              key="feedback"
+              className={`w-[32rem] px-4 py-4 align-top ${editingFeedbackId === application.id ? '' : 'cursor-text'}`}
+              onClick={() => {
+                if (editingFeedbackId !== application.id) handleEditFeedback(application);
+              }}
+            >
               {editingFeedbackId === application.id ? (
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
+                <div className="flex items-start gap-2">
+                  <textarea
+                    className="flex-1 min-w-[18rem] w-full p-2 border rounded resize-y"
+                    rows={3}
                     value={editingFeedbackValue}
                     onChange={(e) => setEditingFeedbackValue(e.target.value)}
-                    onBlur={() => handleBlurSaveFeedback(application.id)}
-                    onKeyPress={(e) => handleKeyPressSaveFeedback(e, application.id)}
-                    className="text-sm text-gray-900 border rounded px-2 py-1 flex-1 min-w-[150px]"
-                    placeholder="Enter feedback..."
+                    onKeyDown={(e) => handleKeyPressSaveFeedback(e, application.id)}
                     autoFocus
                   />
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      console.log("Save button clicked manually");
-                      handleSaveButtonClick(application.id);
-                    }}
-                    className={`px-3 py-1 ${savingFeedback ? 'bg-gray-400' : 'bg-blue-600'} text-white text-xs rounded hover:bg-blue-700`}
-                    disabled={savingFeedback}
-                  >
-                    {savingFeedback ? 'Saving...' : 'Save'}
-                  </button>
+                  <div className="flex flex-col gap-2 flex-shrink-0 w-24">
+                    <button
+                      className="px-2 py-1 text-sm bg-blue-600 text-white rounded disabled:opacity-50"
+                      disabled={savingFeedback}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => handleSaveButtonClick(application.id)}
+                    >
+                      {savingFeedback ? 'Saving...' : 'Save'}
+                    </button>
+                    <button
+                      className="px-2 py-1 text-sm bg-gray-200 text-gray-800 rounded"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => setEditingFeedbackId(null)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 </div>
               ) : (
-                <div
-                  onClick={() => handleEditFeedback(application)}
-                  className="text-sm text-gray-500 cursor-pointer hover:text-gray-700"
-                >
+                <div>
                   {application.feedback ? (
                     <TruncatedFeedback text={application.feedback} />
                   ) : (
-                    'Add feedback...'
+                    <span className="text-gray-400">Add feedback…</span>
                   )}
                 </div>
               )}
@@ -1095,26 +1113,22 @@ const ApplicationsTable = ({
           );
           break;
         case 'rounds':
-          cells.push(
-            <td key="rounds" className="px-4 py-4 whitespace-nowrap">
-              {(() => {
-                const studentData = application.studentData || application.student || {};
-                const rounds = studentData.rounds || {};
-                const status = rounds[currentRound] || 'Pending';
-                let colorClass = 'bg-gray-100 text-gray-800';
-                if (status === 'Shortlisted') colorClass = 'bg-green-100 text-green-800';
-                else if (status === 'Rejected') colorClass = 'bg-red-100 text-red-800';
-                else if (status === 'Pending') colorClass = 'bg-yellow-100 text-yellow-800';
-                return (
-                  <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${colorClass}`}>
-                    {status}
-                  </span>
-                );
-              })()}
-            </td>
-          );
+          {
+            const roundStatus = application.student?.rounds?.[currentRound] || 'pending';
+            cells.push(
+              <td key="rounds" className="w-48 px-4 py-4 whitespace-nowrap text-center">
+                <span className="inline-flex px-2 py-1 text-xs font-semibold rounded-full bg-gray-100">{roundStatus}</span>
+              </td>
+            );
+          }
           break;
         default:
+          // Fallback tries application[column] then student[column]
+          cells.push(
+            <td key={column} className="px-4 py-4 whitespace-nowrap">
+              {application[column] ?? application.student?.[column] ?? 'N/A'}
+            </td>
+          );
           break;
       }
     });
@@ -1134,73 +1148,22 @@ const ApplicationsTable = ({
         <NoData text="No applications found." />
       ) : (
       <>
-        {/* Mobile card view */}
-        <div className="md:hidden space-y-3">
-          {filteredApplications.map((application) => (
-            <div key={application.id} className="bg-white rounded-lg border p-4 shadow-sm">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="text-base font-semibold text-gray-900 truncate">{application.student?.name || 'N/A'}</div>
-                  <div className="text-sm text-gray-500 truncate">{application.student?.rollNumber || '—'}</div>
-                  <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-gray-700">
-                    {application.student?.department && (
-                      <span className="px-2 py-0.5 bg-gray-100 rounded">{application.student.department}</span>
-                    )}
-                    {application.student?.cgpa !== undefined && (
-                      <span className="px-2 py-0.5 bg-gray-100 rounded">CGPA: {application.student.cgpa}</span>
-                    )}
-                  </div>
-                </div>
-                <div className="shrink-0">
-                  <span className={`px-2 py-1 rounded-full text-xs font-semibold ${statusConfig[application.status]?.class || statusConfig.pending.class}`}>
-                    {statusConfig[application.status]?.label || 'Pending'}
-                  </span>
-                </div>
-              </div>
-              {/* Quick actions */}
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleStudentClick(application.student)}
-                  className="px-3 py-2 text-sm bg-white border rounded-lg hover:bg-gray-50"
-                >
-                  View Profile
-                </button>
-                {application.student?.resumeUrl && (
-                  <a
-                    href={application.student.resumeUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="px-3 py-2 text-sm bg-white border rounded-lg hover:bg-gray-50"
-                  >
-                    Resume
-                  </a>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-
         {/* Table view for md+ */}
         <div className="hidden md:block overflow-x-auto w-full" style={{ maxWidth: '100%', position: 'relative', zIndex: 1 }}>
           <div className="inline-block min-w-full align-middle">
             <div className="shadow overflow-hidden border-b border-gray-200 sm:rounded-lg">
-              <table className="min-w-full divide-y divide-gray-200 border border-gray-400">
+              <table className="min-w-full table-fixed divide-y divide-gray-200 border border-gray-400">
                 <thead className="bg-gray-50">
                   <tr>
                     {renderTableHeaders()}
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
-                  {filteredApplications.map((application) => {
-                    console.log("Rendering application row:", application.id);
-                    console.log("Application screening_answers:", application.screening_answers);
-                    return (
-                      <tr key={application.id} className="hover:bg-gray-50">
-                        {renderTableCells(application)}
-                      </tr>
-                    );
-                  })}
+                  {filteredApplications.map((application) => (
+                    <tr key={application.id} className="hover:bg-gray-50">
+                      {renderTableCells(application)}
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>

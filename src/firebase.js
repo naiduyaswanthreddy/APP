@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import { getFirestore, doc, setDoc } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 import { getMessaging, onMessage, getToken, isSupported } from 'firebase/messaging';
 import { getFunctions, httpsCallable } from 'firebase/functions';
@@ -22,7 +22,8 @@ const firebaseApp = initializeApp(firebaseConfig);
 export const auth = getAuth(firebaseApp);
 export const db = getFirestore(firebaseApp);
 export const storage = getStorage(firebaseApp);
-export const functions = getFunctions(firebaseApp);
+// Pin functions to the region where they are deployed
+export const functions = getFunctions(firebaseApp, 'us-central1');
 export const messaging = await (async () => {
   try {
     if (await isSupported()) {
@@ -59,21 +60,53 @@ export function onForegroundMessage(handler) {
 // Enhanced FCM token management
 export async function saveFCMTokenToDatabase(token, enabled = true) {
   try {
+    // Prefer callable function when available
     const result = await saveFCMToken({ fcmToken: token, enabled });
     return result.data;
   } catch (error) {
-    console.error('Error saving FCM token to database:', error);
-    throw error;
+    // Fallback: write directly to Firestore if functions are unavailable (e.g., no Blaze plan)
+    try {
+      const user = auth.currentUser;
+      if (!user) throw new Error('User not authenticated');
+      await setDoc(
+        doc(db, 'students', user.uid),
+        {
+          fcmToken: token,
+          pushNotificationsEnabled: enabled !== undefined ? enabled : true,
+          lastTokenUpdate: new Date()
+        },
+        { merge: true }
+      );
+      return { success: true, message: 'FCM token saved directly to Firestore (fallback)' };
+    } catch (fallbackErr) {
+      console.error('Error saving FCM token (callable failed, fallback failed):', fallbackErr);
+      throw error; // keep original error signature
+    }
   }
 }
 
 export async function updatePushNotificationSettings(enabled) {
   try {
+    // Prefer callable function when available
     const result = await cleanupFCMToken({ enabled });
     return result.data;
   } catch (error) {
-    console.error('Error updating push notification settings:', error);
-    throw error;
+    // Fallback: write directly to Firestore if functions are unavailable (e.g., no Blaze plan)
+    try {
+      const user = auth.currentUser;
+      if (!user) throw new Error('User not authenticated');
+      await setDoc(
+        doc(db, 'students', user.uid),
+        enabled === false
+          ? { fcmToken: null, pushNotificationsEnabled: false, lastTokenUpdate: new Date() }
+          : { pushNotificationsEnabled: true, lastTokenUpdate: new Date() },
+        { merge: true }
+      );
+      return { success: true, message: 'Push notification settings updated directly in Firestore (fallback)' };
+    } catch (fallbackErr) {
+      console.error('Error updating push settings (callable failed, fallback failed):', fallbackErr);
+      throw error; // keep original error signature
+    }
   }
 }
 

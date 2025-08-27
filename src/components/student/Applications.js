@@ -5,8 +5,9 @@ import { getCurrentStudentRollNumber } from '../../utils/studentIdentity';
 import { ToastContainer, toast } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import { createStatusUpdateNotification, createNotification, createSystemAlertNotification } from '../../utils/notificationHelpers';
-import LoadingSpinner from '../ui/LoadingSpinner';
-import Loader from '../../loading';
+ import { JobCardsSkeleton, TableSkeleton } from '../ui/SkeletonLoaders';
+ 
+ 
 
 const STATUS_COLORS = {
   pending: 'bg-yellow-100 text-yellow-800',
@@ -42,14 +43,46 @@ const Applications = () => {
   const [applications, setApplications] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('all');
-  const [sortBy, setSortBy] = useState('newest');
+  const [sortBy, setSortBy] = useState('statusUpdated');
   const [searchTerm, setSearchTerm] = useState('');
   const [isPlaced, setIsPlaced] = useState(false);
   const [showOfferDecision, setShowOfferDecision] = useState({});
   const [offerDecisionLoading, setOfferDecisionLoading] = useState({});
+  const [viewMode, setViewMode] = useState('cards'); // 'cards' or 'rows'
+  const [showFilters, setShowFilters] = useState(false); // mobile collapse state
+  // Responsive breakpoint (Tailwind md = 768px)
+  const [isMdUp, setIsMdUp] = useState(() =>
+    typeof window !== 'undefined' && window.matchMedia
+      ? window.matchMedia('(min-width: 768px)').matches
+      : true
+  );
+  // Stores the selected round label per application id for inline display
+  const [selectedRoundLabel, setSelectedRoundLabel] = useState({});
+  
 
   useEffect(() => {
     fetchApplications();
+  }, []);
+
+  // Track viewport to control mobile/desktop behavior
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const mq = window.matchMedia('(min-width: 768px)');
+    const handler = (e) => setIsMdUp(e.matches);
+    // Older Safari uses addListener/removeListener
+    if (mq.addEventListener) {
+      mq.addEventListener('change', handler);
+    } else if (mq.addListener) {
+      mq.addListener(handler);
+    }
+    setIsMdUp(mq.matches);
+    return () => {
+      if (mq.removeEventListener) {
+        mq.removeEventListener('change', handler);
+      } else if (mq.removeListener) {
+        mq.removeListener(handler);
+      }
+    };
   }, []);
 
   const fetchApplications = async () => {
@@ -104,14 +137,42 @@ const Applications = () => {
           // Normalize applied date to a Date object for consistent rendering/sorting
           const appliedAt = applicationData.applied_at?.toDate
             ? applicationData.applied_at.toDate()
+            : applicationData.appliedAt?.toDate
+            ? applicationData.appliedAt.toDate()
             : (applicationData.applied_at
                 ? new Date(applicationData.applied_at)
+                : applicationData.appliedAt
+                ? new Date(applicationData.appliedAt)
                 : null);
+
+          // Derive lastUpdatedAt: prefer statusUpdatedAt, then updatedAt, then appliedAt
+          const lastUpdatedAt = applicationData.statusUpdatedAt?.toDate
+            ? applicationData.statusUpdatedAt.toDate()
+            : applicationData.updatedAt?.toDate
+            ? applicationData.updatedAt.toDate()
+            : appliedAt;
 
           applicationsData.push({
             id: docSnapshot.id,
             ...applicationData,
-            job: { ...jobData, rounds },
+            lastUpdatedAt,
+            job: { 
+              ...jobData, 
+              rounds,
+              // Ensure salary data comes from job collection, not application
+              ctc: jobData.ctc || '',
+              minCtc: jobData.minCtc || '',
+              maxCtc: jobData.maxCtc || '',
+              salary: jobData.salary || '',
+              minSalary: jobData.minSalary || '',
+              maxSalary: jobData.maxSalary || '',
+              basePay: jobData.basePay || '',
+              variablePay: jobData.variablePay || '',
+              bonuses: jobData.bonuses || '',
+              compensationType: jobData.compensationType || '',
+              ctcUnit: jobData.ctcUnit || '',
+              salaryUnit: jobData.salaryUnit || ''
+            },
             skillMatch: skillMatch,
             currentRound: currentRound,
             rounds: applicationData.student?.rounds || {},
@@ -226,15 +287,59 @@ const Applications = () => {
     return latest;
   };
 
+  // Check if a given date/timestamp is within the past 24 hours
+  const isWithin24Hours = (value) => {
+    if (!value) return false;
+    let date;
+    try {
+      if (typeof value?.toDate === 'function') {
+        // Firestore Timestamp
+        date = value.toDate();
+      } else if (typeof value?.seconds === 'number') {
+        // Firestore Timestamp-like object
+        date = new Date(value.seconds * 1000);
+      } else if (value instanceof Date) {
+        date = value;
+      } else {
+        date = new Date(value);
+      }
+    } catch (_) {
+      return false;
+    }
+    if (!date || isNaN(date.getTime())) return false;
+    const diffMs = Date.now() - date.getTime();
+    return diffMs >= 0 && diffMs <= 24 * 60 * 60 * 1000;
+  };
+
   // Determine if withdraw should be visible: hide if any round already shortlisted/selected
   const canWithdraw = (application) => {
     const rounds = application.rounds || {};
-    const hasShortlistedOrSelected = Object.values(rounds).some(s => s === 'shortlisted' || s === 'selected');
-    if (hasShortlistedOrSelected) return false;
     const currStatus = rounds?.[application.currentRound];
-    if (!currStatus) return false;
     if (application.status === 'withdrawn') return false;
-    return ['pending', 'under_review'].includes(currStatus);
+
+    // Only allow withdraw while strictly at initial state.
+    // As soon as application moves to any review/decision stage, disallow.
+    const progressedStatuses = new Set([
+      'under_review',
+      'shortlisted',
+      'selected',
+      'rejected',
+      'not_shortlisted',
+      'waitlisted',
+      'interview_scheduled',
+      'offer_accepted',
+      'offer_rejected',
+      'placed'
+    ]);
+
+    // If any round (including current) shows progressed status OR application.status is progressed, cannot withdraw
+    const hasProgressed = Object.values(rounds).some(s => progressedStatuses.has(s)) || progressedStatuses.has(application.status);
+    if (hasProgressed) return false;
+
+    // Only when status is strictly 'pending' AND within 24 hours of applying
+    const within24h = isWithin24Hours(application.appliedAt);
+    if (!within24h) return false;
+    return application.status === 'pending' || currStatus === 'pending';
   };
 
   const handleAcceptOffer = async (applicationId) => {
@@ -410,6 +515,8 @@ const Applications = () => {
     }
   };
 
+  
+
   const handleOfferDecision = async (applicationId, decision) => {
     try {
       const application = applications.find(app => app.id === applicationId);
@@ -422,9 +529,9 @@ const Applications = () => {
       const studentRef = doc(db, 'students', auth.currentUser.uid);
       
       if (decision === 'accept') {
-        // Accept offer
+        // Accept offer - update application status to placed
         await updateDoc(applicationRef, {
-          status: 'offer_accepted',
+          status: 'placed',
           offerDecision: 'Accepted',
           decisionDate: serverTimestamp(),
           updatedAt: serverTimestamp()
@@ -435,7 +542,7 @@ const Applications = () => {
           placementStatus: 'placed',
           placedCompany: application.job.company,
           placedJobTitle: application.job.position,
-          placedPackage: application.job.ctc || application.job.salary,
+          placedPackage: application.job.ctc || application.job.maxCtc || application.job.salary || application.job.maxSalary || '',
           placedLocation: application.job.location,
           placedAt: serverTimestamp(),
           offerDecision: 'Accepted',
@@ -449,7 +556,7 @@ const Applications = () => {
           applicationId: applicationId,
           companyName: application.job.company,
           jobTitle: application.job.position,
-          package: application.job.ctc || application.job.salary,
+          package: application.job.ctc || application.job.maxCtc || application.job.salary || application.job.maxSalary || '',
           location: application.job.location,
           acceptedAt: serverTimestamp(),
           status: 'active'
@@ -548,6 +655,9 @@ const Applications = () => {
       
       const aTime = a.appliedAt?.getTime?.() || 0;
       const bTime = b.appliedAt?.getTime?.() || 0;
+      const aUpdated = (a.lastUpdatedAt?.getTime?.()) || aTime;
+      const bUpdated = (b.lastUpdatedAt?.getTime?.()) || bTime;
+      if (sortBy === 'statusUpdated') return bUpdated - aUpdated;
       if (sortBy === 'newest') return bTime - aTime;
       if (sortBy === 'oldest') return aTime - bTime;
       if (sortBy === 'company') return a.job.company.localeCompare(b.job.company);
@@ -555,59 +665,129 @@ const Applications = () => {
     });
 
   return (
-    <div className="px-0 sm:px-0 py-2 space-y-6">
+    <div className="px-0 sm:px-0 pt-0">
       <ToastContainer />
       
-      {/* Placement Banner */}
-      {isPlaced && (
-        <div className="bg-green-100 text-green-800 p-4 rounded-lg mb-6">
-          You are placed! You cannot apply to other jobs.
-        </div>
-      )}
+      
 
       {/* Search + Filters */}
-      <div className="flex flex-col md:flex-row md:items-center gap-3 md:gap-4 mb-6">
-        <div className="w-full md:w-80">
+      <div className="bg-white/80 backdrop-blur supports-[backdrop-filter]:bg-white/60 border border-gray-200 rounded-xl p-3 md:p-4 shadow-sm flex flex-col md:flex-row md:items-center gap-3 md:gap-4 mb-6">
+        {/* Search (always visible) */}
+        <div className="relative w-full md:w-96">
+          <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-gray-400">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M10 18a8 8 0 100-16 8 8 0 000 16z" />
+            </svg>
+          </span>
           <input
             type="text"
             value={searchTerm}
             onChange={(e)=>setSearchTerm(e.target.value)}
             placeholder="Search by role, company, location, or skill..."
-            className="w-full p-2 border rounded"
+            aria-label="Search applications"
+            className="w-full h-11 pl-10 pr-3 rounded-lg border border-gray-300 bg-white text-gray-900 placeholder-gray-400 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
           />
         </div>
-        <select 
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          className="p-2 border rounded"
-        >
-          <option value="all">All Applications</option>
-          {Object.keys(STATUS_LABELS).map(status => (
-            <option key={status} value={status}>
-              {STATUS_LABELS[status]}
-            </option>
-          ))}
-        </select>
+        {/* Mobile: Chevron to collapse/expand filters */}
+        <div className="flex justify-center mt-0 mb-0 md:hidden">
+          <button
+            onClick={() => setShowFilters(!showFilters)}
+            className={`p-0.5 rounded-full border transition ${showFilters ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-gray-50 border-gray-200 text-gray-700'}`}
+            aria-expanded={showFilters}
+            aria-label="Toggle filters"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              className={`h-4 w-4 transform transition-transform ${showFilters ? 'rotate-180' : 'rotate-0'}`}
+              viewBox="0 0 20 20"
+              fill="currentColor"
+            >
+              <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 111.06 1.06l-4.24 4.24a.75.75 0 01-1.06 0L5.21 8.29a.75.75 0 01.02-1.08z" clipRule="evenodd" />
+            </svg>
+          </button>
+        </div>
 
-        <select 
-          value={sortBy}
-          onChange={(e) => setSortBy(e.target.value)}
-          className="p-2 border rounded"
-        >
-          <option value="newest">Newest First</option>
-          <option value="oldest">Oldest First</option>
-          <option value="company">Company Name</option>
-        </select>
+        {/* Collapsible Filters (hidden by default on mobile, always visible on md+) */}
+        <div className={`${showFilters ? 'mt-2 flex flex-col gap-3' : 'hidden'} md:flex md:flex-row md:items-center md:gap-4 w-full`}>
+          {/* Status Filter */}
+          <select 
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            className="w-full md:w-56 h-11 px-3 rounded-lg border border-gray-300 bg-white text-gray-800 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+          >
+            <option value="all">All Applications</option>
+            {Object.keys(STATUS_LABELS).map(status => (
+              <option key={status} value={status}>
+                {STATUS_LABELS[status]}
+              </option>
+            ))}
+          </select>
+
+          {/* Sort By */}
+          <select 
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value)}
+            className="w-full md:w-56 h-11 px-3 rounded-lg border border-gray-300 bg-white text-gray-800 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+          >
+            <option value="newest">Newest First</option>
+            <option value="oldest">Oldest First</option>
+            <option value="company">Company Name</option>
+            <option value="statusUpdated">Latest Status Update</option>
+          </select>
+
+          {/* View Mode Toggle (hidden on mobile) */}
+          <div className="hidden md:inline-flex items-center rounded-lg border border-gray-300 overflow-hidden bg-gray-50 shadow-sm">
+            <button
+              onClick={() => setViewMode('cards')}
+              aria-pressed={viewMode === 'cards'}
+              className={`h-11 px-3 text-sm font-medium transition ${
+                viewMode === 'cards' 
+                  ? 'bg-blue-600 text-white' 
+                  : 'text-gray-700 hover:bg-white'
+              }`}
+              title="Card view"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
+              </svg>
+            </button>
+            <button
+              onClick={() => setViewMode('rows')}
+              aria-pressed={viewMode === 'rows'}
+              className={`h-11 px-3 text-sm font-medium transition ${
+                viewMode === 'rows' 
+                  ? 'bg-blue-600 text-white' 
+                  : 'text-gray-700 hover:bg-white'
+              }`}
+              title="Row view"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+              </svg>
+            </button>
+          </div>
+        </div>
       </div>
 
-      {/* Applications Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
+      {/* Applications Display */}
+      {(() => { const effectiveView = isMdUp ? viewMode : 'cards'; return loading ? (
+        effectiveView === 'cards' ? (
+          <JobCardsSkeleton count={6} />
+        ) : (
+          <div className="p-2">
+            <TableSkeleton rows={6} columns={5} />
+          </div>
+        )
+      ) : (
+      <div className={effectiveView === 'cards' ? "grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6" : "space-y-4"}>
         {filteredApplications.map(application => (
-          <div 
-            key={application.id} 
-            className={`relative rounded-lg shadow-sm p-6 transition-all duration-300 
-              ${application.rounds[application.currentRound] === 'withdrawn' ? 'bg-red-50 opacity-50' : 'bg-white opacity-100'}`}
-          >
+          effectiveView === 'cards' ? (
+            // Card View
+            <div 
+              key={application.id} 
+              className={`relative rounded-lg shadow-sm p-6 transition-all duration-300 border-4 border-gray-200
+                ${application.rounds[application.currentRound] === 'withdrawn' ? 'bg-red-50 opacity-50' : 'bg-white opacity-100'}`}
+            >
             {/* Withdrawn Overlay */}
             {application.rounds[application.currentRound] === 'withdrawn' && (
               <div className="absolute inset-0 bg-white bg-opacity-80 flex items-center justify-center rounded-lg z-30">
@@ -644,19 +824,47 @@ const Applications = () => {
               <div>
                 <h3 className="text-xl font-medium">{application.job.position}</h3>
                 <p className="text-gray-600">{application.job.company}</p>
+                {/* Application Date/Time */}
+                <div className="flex items-center mt-2 text-sm text-gray-500">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  Applied: {application.appliedAt ? new Intl.DateTimeFormat('en-IN', {
+                    year: 'numeric',
+                    month: 'short',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    hour12: true
+                  }).format(application.appliedAt) : 'Date not available'}
+                </div>
               </div>
 
 
-            {/* Latest Decided Status (round name under it) */}
+            {/* Latest Decided Status (round name above it) */}
             {(() => {
               const decided = getLatestDecidedStage(application.rounds, application.job.rounds);
-              if (!decided) return null;
+              if (decided) {
+                return (
+                  <div className="mb-3">
+                    <div className="text-xs text-gray-600 mb-1">{decided.roundName}</div>
+                    <div className={`inline-flex px-3 py-1 rounded-full text-sm font-medium ${STATUS_COLORS[decided.status] || 'bg-gray-100 text-gray-800'}`}>
+                      {STATUS_LABELS[decided.status] || decided.status}
+                    </div>
+                  </div>
+                );
+              }
+              // Fallback: show application.status (e.g., pending) if no decided stage yet
+              const fallbackStatus = application.status || application.rounds?.[application.currentRound];
+              if (!fallbackStatus) return null;
               return (
                 <div className="mb-3">
-                  <div className={`inline-flex px-3 py-1 rounded-full text-sm font-medium ${STATUS_COLORS[decided.status] || 'bg-gray-100 text-gray-800'}`}>
-                    {STATUS_LABELS[decided.status] || decided.status}
+                  {application.currentRound && (
+                    <div className="text-xs text-gray-600 mb-1">{application.currentRound}</div>
+                  )}
+                  <div className={`inline-flex px-3 py-1 rounded-full text-sm font-medium ${STATUS_COLORS[fallbackStatus] || 'bg-gray-100 text-gray-800'}`}>
+                    {STATUS_LABELS[fallbackStatus] || fallbackStatus}
                   </div>
-                  <div className="text-xs text-gray-600 mt-1">{decided.roundName}</div>
                 </div>
               );
             })()}
@@ -698,9 +906,13 @@ const Applications = () => {
                 {getStatusProgressPoints(application.rounds, application.currentRound, application.job.rounds).map((point, index) => (
                   <div
                     key={index}
-                    className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-semibold z-10
+                    className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-semibold z-10 cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500
                       ${point.completed ? 'bg-pink-500 text-white' : 'bg-gray-300 text-gray-700'}`}
                     title={point.stageName}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setSelectedRoundLabel(prev => ({ ...prev, [application.id]: point.stageName }))}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSelectedRoundLabel(prev => ({ ...prev, [application.id]: point.stageName })); } }}
                   >
                     {point.roundLabel}
                   </div>
@@ -708,17 +920,14 @@ const Applications = () => {
               </div>
             </div>
 
-
-            {/* Application Details */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
-              <div>
-                <p className="text-sm text-gray-600">Applied on</p>
-                <p className="font-medium">
-                  {application.appliedAt ? application.appliedAt.toLocaleString() : '—'}
-                </p>
+            {selectedRoundLabel?.[application.id] && (
+              <div className="-mt-1 mb-3 text-center text-xs text-gray-600">
+                {selectedRoundLabel[application.id]}
               </div>
-              {/* Removed Application Deadline display as requested */}
-            </div>
+            )}
+
+
+            {/* Application Details - Removed redundant Applied on section */}
 
             {/* Action Buttons */}
             <div className="flex gap-2 mt-4">
@@ -734,6 +943,8 @@ const Applications = () => {
                 </button>
               )}
 
+          
+
               {canWithdraw(application) && (
                 <button 
                   onClick={() => handleWithdraw(application.id)}
@@ -742,7 +953,13 @@ const Applications = () => {
                   ❌ Withdraw
                 </button>
               )}
+              {canWithdraw(application) && (
+                <p className="text-[10px] text-gray-500 mt-1">
+                  Withdraw available within 24 hours of applying.
+                </p>
+              )}
             </div>
+
 
             {/* Admin Notes */}
             {application.feedback && (
@@ -754,6 +971,110 @@ const Applications = () => {
               </div>
             )}
           </div>
+          ) : (
+            // Row View
+            <div 
+              key={application.id} 
+              className={`relative rounded-lg shadow-sm p-4 transition-all duration-300 flex items-center gap-4 border border-gray-200
+                ${application.rounds[application.currentRound] === 'withdrawn' ? 'bg-red-50 opacity-50' : 'bg-white opacity-100'}`}
+            >
+              {/* Withdrawn Overlay */}
+              {application.rounds[application.currentRound] === 'withdrawn' && (
+                <div className="absolute inset-0 bg-white bg-opacity-80 flex items-center justify-center rounded-lg z-30">
+                  <span className="text-2xl font-semibold text-red-600">Withdrawn</span>
+                </div>
+              )}
+
+              {/* Company Logo Placeholder */}
+              <div className="w-12 h-12 bg-gray-200 rounded-lg flex items-center justify-center flex-shrink-0">
+                <span className="text-gray-600 font-semibold text-sm">
+                  {application.job.company?.charAt(0) || 'C'}
+                </span>
+              </div>
+
+              {/* Job Info */}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <h3 className="text-lg font-medium truncate">{application.job.position}</h3>
+                    <p className="text-gray-600 text-sm">{application.job.company}</p>
+                  </div>
+                  
+                  {/* Status Badge */}
+                  {(() => {
+                    const decided = getLatestDecidedStage(application.rounds, application.job.rounds);
+                    if (decided) {
+                      return (
+                        <div className="text-right">
+                          <div className="text-[11px] text-gray-600 mb-0.5">{decided.roundName}</div>
+                          <div className={`inline-flex px-3 py-1 rounded-full text-sm font-medium ${STATUS_COLORS[decided.status] || 'bg-gray-100 text-gray-800'}`}>
+                            {STATUS_LABELS[decided.status] || decided.status}
+                          </div>
+                        </div>
+                      );
+                    }
+                    const fallbackStatus = application.status || application.rounds?.[application.currentRound];
+                    if (!fallbackStatus) return null;
+                    return (
+                      <div className="text-right">
+                        {application.currentRound && (
+                          <div className="text-[11px] text-gray-600 mb-0.5">{application.currentRound}</div>
+                        )}
+                        <div className={`inline-flex px-3 py-1 rounded-full text-sm font-medium ${STATUS_COLORS[fallbackStatus] || 'bg-gray-100 text-gray-800'}`}>
+                          {STATUS_LABELS[fallbackStatus] || fallbackStatus}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+                
+                {/* Applied Date */}
+                <div className="flex items-center mt-1 text-sm text-gray-500">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  Applied: {application.appliedAt ? new Intl.DateTimeFormat('en-IN', {
+                    year: 'numeric',
+                    month: 'short',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    hour12: true
+                  }).format(application.appliedAt) : 'Date not available'}
+                </div>
+              </div>
+
+              {/* Progress Bar */}
+              <div className="w-24 flex-shrink-0">
+                <div className="relative h-2 bg-gray-200 rounded-full">
+                  <div
+                    className="absolute top-0 left-0 bg-pink-500 h-2 rounded-full transition-all duration-500"
+                    style={{ width: `${getStatusProgress(application.rounds, application.currentRound, application.job.rounds)}%` }}
+                  ></div>
+                </div>
+                <div className="text-xs text-gray-500 mt-1 text-center">
+                  {getStatusProgress(application.rounds, application.currentRound, application.job.rounds)}%
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex gap-2 flex-shrink-0">
+                {canWithdraw(application) && (
+                  <button 
+                    onClick={() => handleWithdraw(application.id)}
+                    className="px-3 py-1 text-red-600 hover:bg-red-50 rounded text-sm"
+                  >
+                    Withdraw
+                  </button>
+                )}
+                {canWithdraw(application) && (
+                  <span className="text-[10px] text-gray-500 self-center">
+                    Within 24 hours of applying
+                  </span>
+                )}
+              </div>
+            </div>
+          )
         ))}
 
         {filteredApplications.length === 0 && !loading && (
@@ -778,12 +1099,8 @@ const Applications = () => {
           </div>
         )}
 
-        {loading && (
-          <div className="fixed inset-0 bg-gray-200 bg-opacity-10 flex items-center justify-center z-50">
-            <Loader />
-          </div>
-        )}
       </div>
+      ) })()}
     </div>
   );
 };

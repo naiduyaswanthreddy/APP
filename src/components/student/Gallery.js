@@ -2,8 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { collection, getDocs, addDoc, query, orderBy, where, doc, getDoc, updateDoc, serverTimestamp, increment, limit } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, auth, storage } from '../../firebase';
-import { ToastContainer, toast } from "react-toastify";
-import "react-toastify/dist/ReactToastify.css";
+import { toast } from "react-toastify";
 import { User, ThumbsUp, MessageSquare, Share2, Award, Briefcase, Code, BookOpen, Gift, Calendar, Filter, Trophy, Bell, Star, Medal } from 'lucide-react';
 
 const Gallery = () => {
@@ -246,7 +245,6 @@ const Gallery = () => {
 
   return (
     <div className="container mx-auto px-0 py-6">
-      <ToastContainer position="top-right" autoClose={3000} />
       
       {/* Header with Create Post Button */}
       <div className="flex justify-between items-center mb-6">
