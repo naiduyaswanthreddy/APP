@@ -23,7 +23,8 @@ const Login = () => {
       if (user) {
         const storedRole = localStorage.getItem("userRole");
         if (storedRole) {
-          navigate(`/${storedRole}`, { replace: true });
+          const normalizedStoredRole = storedRole === 'superadmin' ? 'admin' : storedRole;
+          navigate(`/${normalizedStoredRole}`, { replace: true });
         }
       }
     });

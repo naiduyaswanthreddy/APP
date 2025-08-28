@@ -10,6 +10,7 @@ import { ContentLoader, PageTransition } from '../ui/PageTransition';
 import { getCurrentStudentRollNumber } from '../../utils/studentIdentity';
 import { useFreezeStatus } from '../../hooks/useFreezeStatus';
 import { AlertTriangle } from 'lucide-react';
+import { formatAmount } from '../../utils/formatAmount';
 
 const JobCards = () => {
   const navigate = useNavigate();
@@ -91,6 +92,18 @@ const JobCards = () => {
   const [mfWorkMode, setMfWorkMode] = useState(''); // Remote | On-site | Hybrid
   const [mfBond, setMfBond] = useState(''); // '' | 'requires' | 'no'
   const [tempBond, setTempBond] = useState(''); // transient bond filter for temporary apply
+
+  // On mobile, prevent background scroll when the manual filter is open to avoid layout shifts
+  useEffect(() => {
+    if (!isMdUp && showManualQuick && typeof document !== 'undefined') {
+      const originalOverflow = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+      return () => {
+        document.body.style.overflow = originalOverflow;
+      };
+    }
+    return undefined;
+  }, [showManualQuick, isMdUp]);
 
   useEffect(() => {
     fetchJobs();
@@ -923,71 +936,147 @@ const handleUnsaveJob = async (jobId) => {
                     +
                   </button>
                   {showManualQuick && (
-                    <div className="absolute z-20 mt-2 w-72 right-0 p-3 border rounded-lg bg-white shadow-lg">
-                      <div className="flex flex-col gap-2 text-sm">
-                        <div>
-                          <label className="block text-gray-700 mb-1">Location</label>
-                          <input
-                            type="text"
-                            placeholder="e.g., Bangalore"
-                            className="w-full p-1.5 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                            value={mfLocation}
-                            onChange={(e) => setMfLocation(e.target.value)}
-                          />
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
+                    isMdUp ? (
+                      <div className="absolute z-20 mt-2 w-72 right-0 p-3 border rounded-lg bg-white shadow-lg">
+                        <div className="flex flex-col gap-2 text-sm">
                           <div>
-                            <label className="block text-gray-700 mb-1">Min CTC (₹LPA)</label>
-                            <input type="number" className="w-full p-1.5 border border-gray-300 rounded-md" value={mfMinCTC} onChange={(e)=>setMfMinCTC(e.target.value)} />
+                            <label className="block text-gray-700 mb-1">Location</label>
+                            <input
+                              type="text"
+                              placeholder="e.g., Bangalore"
+                              className="w-full p-1.5 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                              value={mfLocation}
+                              onChange={(e) => setMfLocation(e.target.value)}
+                            />
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <label className="block text-gray-700 mb-1">Min CTC (₹LPA)</label>
+                              <input type="number" className="w-full p-1.5 border border-gray-300 rounded-md" value={mfMinCTC} onChange={(e)=>setMfMinCTC(e.target.value)} />
+                            </div>
+                            <div>
+                              <label className="block text-gray-700 mb-1">Max CTC (₹LPA)</label>
+                              <input type="number" className="w-full p-1.5 border border-gray-300 rounded-md" value={mfMaxCTC} onChange={(e)=>setMfMaxCTC(e.target.value)} />
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <label className="block text-gray-700 mb-1">Min Stipend (₹)</label>
+                              <input type="number" className="w-full p-1.5 border border-gray-300 rounded-md" value={mfMinStipend} onChange={(e)=>setMfMinStipend(e.target.value)} />
+                            </div>
+                            <div>
+                              <label className="block text-gray-700 mb-1">Max Stipend (₹)</label>
+                              <input type="number" className="w-full p-1.5 border border-gray-300 rounded-md" value={mfMaxStipend} onChange={(e)=>setMfMaxStipend(e.target.value)} />
+                            </div>
                           </div>
                           <div>
-                            <label className="block text-gray-700 mb-1">Max CTC (₹LPA)</label>
-                            <input type="number" className="w-full p-1.5 border border-gray-300 rounded-md" value={mfMaxCTC} onChange={(e)=>setMfMaxCTC(e.target.value)} />
+                            <label className="block text-gray-700 mb-1">Work Mode</label>
+                            <select className="w-full p-1.5 border border-gray-300 rounded-md" value={mfWorkMode} onChange={(e)=>setMfWorkMode(e.target.value)}>
+                              <option value="">Any</option>
+                              <option value="Remote">Remote</option>
+                              <option value="On-site">On-site</option>
+                              <option value="Hybrid">Hybrid</option>
+                            </select>
                           </div>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
                           <div>
-                            <label className="block text-gray-700 mb-1">Min Stipend (₹)</label>
-                            <input type="number" className="w-full p-1.5 border border-gray-300 rounded-md" value={mfMinStipend} onChange={(e)=>setMfMinStipend(e.target.value)} />
+                            <label className="block text-gray-700 mb-1">Bond</label>
+                            <select className="w-full p-1.5 border border-gray-300 rounded-md" value={mfBond} onChange={(e)=>setMfBond(e.target.value)}>
+                              <option value="">Any</option>
+                              <option value="requires">Requires bond</option>
+                              <option value="no">No bond</option>
+                            </select>
                           </div>
-                          <div>
-                            <label className="block text-gray-700 mb-1">Max Stipend (₹)</label>
-                            <input type="number" className="w-full p-1.5 border border-gray-300 rounded-md" value={mfMaxStipend} onChange={(e)=>setMfMaxStipend(e.target.value)} />
+                          <div className="flex items-center gap-2 mt-1">
+                            <button
+                              type="button"
+                              className="px-3 py-1 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700"
+                              onClick={() => {
+                                setTempBond(mfBond || '');
+                                setShowManualQuick(false);
+                              }}
+                            >
+                              Add
+                            </button>
+                            <button type="button" className="px-3 py-1 text-sm rounded-md bg-gray-100 text-gray-800 hover:bg-gray-200" onClick={()=>setShowManualQuick(false)}>Cancel</button>
                           </div>
-                        </div>
-                        <div>
-                          <label className="block text-gray-700 mb-1">Work Mode</label>
-                          <select className="w-full p-1.5 border border-gray-300 rounded-md" value={mfWorkMode} onChange={(e)=>setMfWorkMode(e.target.value)}>
-                            <option value="">Any</option>
-                            <option value="Remote">Remote</option>
-                            <option value="On-site">On-site</option>
-                            <option value="Hybrid">Hybrid</option>
-                          </select>
-                        </div>
-                        <div>
-                          <label className="block text-gray-700 mb-1">Bond</label>
-                          <select className="w-full p-1.5 border border-gray-300 rounded-md" value={mfBond} onChange={(e)=>setMfBond(e.target.value)}>
-                            <option value="">Any</option>
-                            <option value="requires">Requires bond</option>
-                            <option value="no">No bond</option>
-                          </select>
-                        </div>
-                        <div className="flex items-center gap-2 mt-1">
-                          <button
-                            type="button"
-                            className="px-3 py-1 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700"
-                            onClick={() => {
-                              // Temporary apply: update bond and close; other mf* are live-applied in filteredJobs
-                              setTempBond(mfBond || '');
-                              setShowManualQuick(false);
-                            }}
-                          >
-                            Add
-                          </button>
-                          <button type="button" className="px-3 py-1 text-sm rounded-md bg-gray-100 text-gray-800 hover:bg-gray-200" onClick={()=>setShowManualQuick(false)}>Cancel</button>
                         </div>
                       </div>
-                    </div>
+                    ) : (
+                      // Mobile: render as bottom-sheet modal to avoid layout shift
+                      <div className="fixed inset-0 z-30 flex items-end justify-center">
+                        {/* Backdrop */}
+                        <div className="absolute inset-0 bg-black/40" onClick={() => setShowManualQuick(false)} aria-hidden="true"></div>
+                        {/* Sheet */}
+                        <div className="relative w-full max-w-md mx-auto bg-white rounded-t-2xl shadow-xl p-4 animate-[slide-up_0.2s_ease-out]">
+                          <div className="flex items-center justify-between mb-2">
+                            <h3 className="text-base font-semibold">Add Filters</h3>
+                            <button onClick={() => setShowManualQuick(false)} className="text-gray-500 hover:text-gray-700" aria-label="Close">✕</button>
+                          </div>
+                          <div className="flex flex-col gap-2 text-sm">
+                            <div>
+                              <label className="block text-gray-700 mb-1">Location</label>
+                              <input
+                                type="text"
+                                placeholder="e.g., Bangalore"
+                                className="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                value={mfLocation}
+                                onChange={(e) => setMfLocation(e.target.value)}
+                              />
+                            </div>
+                            <div className="grid grid-cols-2 gap-2">
+                              <div>
+                                <label className="block text-gray-700 mb-1">Min CTC (₹LPA)</label>
+                                <input type="number" className="w-full p-2 border border-gray-300 rounded-md" value={mfMinCTC} onChange={(e)=>setMfMinCTC(e.target.value)} />
+                              </div>
+                              <div>
+                                <label className="block text-gray-700 mb-1">Max CTC (₹LPA)</label>
+                                <input type="number" className="w-full p-2 border border-gray-300 rounded-md" value={mfMaxCTC} onChange={(e)=>setMfMaxCTC(e.target.value)} />
+                              </div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2">
+                              <div>
+                                <label className="block text-gray-700 mb-1">Min Stipend (₹)</label>
+                                <input type="number" className="w-full p-2 border border-gray-300 rounded-md" value={mfMinStipend} onChange={(e)=>setMfMinStipend(e.target.value)} />
+                              </div>
+                              <div>
+                                <label className="block text-gray-700 mb-1">Max Stipend (₹)</label>
+                                <input type="number" className="w-full p-2 border border-gray-300 rounded-md" value={mfMaxStipend} onChange={(e)=>setMfMaxStipend(e.target.value)} />
+                              </div>
+                            </div>
+                            <div>
+                              <label className="block text-gray-700 mb-1">Work Mode</label>
+                              <select className="w-full p-2 border border-gray-300 rounded-md" value={mfWorkMode} onChange={(e)=>setMfWorkMode(e.target.value)}>
+                                <option value="">Any</option>
+                                <option value="Remote">Remote</option>
+                                <option value="On-site">On-site</option>
+                                <option value="Hybrid">Hybrid</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-gray-700 mb-1">Bond</label>
+                              <select className="w-full p-2 border border-gray-300 rounded-md" value={mfBond} onChange={(e)=>setMfBond(e.target.value)}>
+                                <option value="">Any</option>
+                                <option value="requires">Requires bond</option>
+                                <option value="no">No bond</option>
+                              </select>
+                            </div>
+                            <div className="flex items-center gap-2 mt-1">
+                              <button
+                                type="button"
+                                className="flex-1 px-4 py-2 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700"
+                                onClick={() => {
+                                  setTempBond(mfBond || '');
+                                  setShowManualQuick(false);
+                                }}
+                              >
+                                Apply
+                              </button>
+                              <button type="button" className="px-4 py-2 text-sm rounded-md bg-gray-100 text-gray-800 hover:bg-gray-200" onClick={()=>setShowManualQuick(false)}>Cancel</button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )
                   )}
                 </div>
               </>
@@ -1315,11 +1404,6 @@ const handleUnsaveJob = async (jobId) => {
                   } catch (_) {}
 
                   // compute comp chips
-                  const formatAmount = (val) => {
-                    const num = Number(val);
-                    if (!isFinite(num) || num <= 0) return null;
-                    try { return num.toLocaleString('en-IN'); } catch (_) { return String(num); }
-                  };
                   const ctcUnit = (job.ctcUnit || 'Yearly').toLowerCase();
                   const ctcUnitText = ctcUnit === 'yearly' ? 'year' : ctcUnit;
                   const salaryUnit = (job.salaryUnit || 'Monthly').toLowerCase();
@@ -1330,14 +1414,14 @@ const handleUnsaveJob = async (jobId) => {
                   const ctcSingle = formatAmount(job.ctc);
                   const ctcDisplay = ctcRange
                     ? `₹${ctcRange}/${ctcUnitText}`
-                    : (ctcSingle ? `₹${ctcSingle}/${ctcUnitText}` : 'Not Disclosed');
+                    : (ctcSingle ? `₹${ctcSingle}/${ctcUnitText}` : null);
                   const stipendRange = formatAmount(job.minSalary) || formatAmount(job.maxSalary)
                     ? `${formatAmount(job.minSalary) || '—'} - ₹${formatAmount(job.maxSalary) || '—'}`
                     : null;
                   const stipendSingle = formatAmount(job.salary);
                   const stipendDisplay = stipendRange
                     ? `₹${stipendRange}/${salaryUnitText}`
-                    : (stipendSingle ? `₹${stipendSingle}/${salaryUnitText}` : 'Not Disclosed');
+                    : (stipendSingle ? `₹${stipendSingle}/${salaryUnitText}` : null);
 
                   const isWithdrawn = isApplied && applicationStatuses[job.id] === 'withdrawn';
 
@@ -1504,11 +1588,12 @@ const handleUnsaveJob = async (jobId) => {
       </div>
 
       <div className="flex flex-wrap gap-2 mb-3">
-        <span className="px-2 py-1 rounded-full bg-yellow-200 dark:bg-gradient-to-r dark:from-yellow-300 dark:to-orange-300 text-gray-800 dark:text-black font-bold text-xs shadow-lg dark:shadow-yellow-400/50">
-          CTC - {ctcDisplay}
-        </span>
-        {/* Only show stipend if it exists or if it's an internship */}
-        {(stipendSingle || stipendRange || (Array.isArray(job.jobTypes) && job.jobTypes.some(type => type.toLowerCase().includes('intern')))) && (
+        {ctcDisplay && (
+          <span className="px-2 py-1 rounded-full bg-yellow-200 dark:bg-gradient-to-r dark:from-yellow-300 dark:to-orange-300 text-gray-800 dark:text-black font-bold text-xs shadow-lg dark:shadow-yellow-400/50">
+            CTC - {ctcDisplay}
+          </span>
+        )}
+        {stipendDisplay && (
           <span className="px-2 py-1 rounded-full bg-yellow-200 dark:bg-gradient-to-r dark:from-green-300 dark:to-blue-300 text-gray-800 dark:text-black font-bold text-xs shadow-lg dark:shadow-green-400/50">
             Stipend - {stipendDisplay}
           </span>
@@ -1616,19 +1701,14 @@ const handleUnsaveJob = async (jobId) => {
                           const completed = isJobCompleted(job);
                           const isWithdrawn = isApplied && applicationStatuses[job.id] === 'withdrawn';
 
-                          // Format compensation
-                          const formatAmount = (val) => {
-                            const num = Number(val);
-                            if (!isFinite(num) || num <= 0) return null;
-                            try { return num.toLocaleString('en-IN'); } catch (_) { return String(num); }
-                          };
+                          // Format compensation (using shared utility)
                           const ctcSingle = formatAmount(job.ctc);
                           const ctcRange = formatAmount(job.minCtc) || formatAmount(job.maxCtc)
                             ? `${formatAmount(job.minCtc) || '—'} - ₹${formatAmount(job.maxCtc) || '—'}`
                             : null;
                           const ctcDisplay = ctcRange
                             ? `₹${ctcRange}`
-                            : (ctcSingle ? `₹${ctcSingle}` : 'Not Disclosed');
+                            : (ctcSingle ? `₹${ctcSingle}` : null);
 
                           // Table row styling based on viewed/new status
                           const jobStatus = jobStatuses[job.id];
@@ -1653,7 +1733,7 @@ const handleUnsaveJob = async (jobId) => {
                                   ))}
                                 </div>
                               </td>
-                              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{ctcDisplay}</td>
+                              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{ctcDisplay || ''}</td>
                               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{job.location || 'Not specified'}</td>
                               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                                 <div>{job.deadline ? new Date(job.deadline).toLocaleDateString() : 'No deadline'}</div>

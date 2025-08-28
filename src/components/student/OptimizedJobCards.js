@@ -7,6 +7,7 @@ import Loader from '../../loading';
 import { useFirebaseQuery } from '../../hooks/useFirebaseQuery';
 import VirtualizedList from '../common/VirtualizedList';
 import { createDebouncedSearch, cacheManager, performanceMetrics } from '../../utils/performanceOptimizer';
+import { formatAmount } from '../../utils/formatAmount';
 
 // Memoized job card component
 const JobCard = memo(({ 
@@ -94,11 +95,11 @@ const JobCard = memo(({
       <div className="mb-4">
         {job.jobTypes?.includes('Internship') ? (
           <p className="text-lg font-semibold text-green-600">
-            ₹{job.salary || job.minSalary || job.maxSalary || 'Not specified'} /month
+            ₹{formatAmount(job.salary || job.minSalary || job.maxSalary) || 'Not specified'} /month
           </p>
         ) : (
           <p className="text-lg font-semibold text-green-600">
-            ₹{job.ctc || job.minCtc || job.maxCtc || 'Not specified'} LPA
+            ₹{formatAmount(job.ctc || job.minCtc || job.maxCtc) || 'Not specified'} LPA
           </p>
         )}
       </div>

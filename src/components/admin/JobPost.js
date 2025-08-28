@@ -154,11 +154,11 @@ const JobPost = () => {
     ppoPportunity: false,
     bondRequired: false,
     bondDetails: '',
-    rounds: [{ name: '' }],
+    rounds: [],
     roundsDescription: '',
     skills: [],
     newSkill: '',
-    screeningQuestions: [{ question: '', type: 'text', options: [] }],
+    screeningQuestions: [],
     jobPolicy: 'Global',
     whoCanApply: 'Eligible',
     jobStatus: 'Open for Applications',
@@ -244,6 +244,14 @@ const JobPost = () => {
             return '';
           }
         };
+        // Sanitize rounds and screening questions to avoid default blank inputs
+        const sanitizedRounds = Array.isArray(jobData.rounds)
+          ? jobData.rounds.filter(r => String(r?.name || '').trim() !== '')
+          : [];
+        const sanitizedQuestions = Array.isArray(jobData.screeningQuestions)
+          ? jobData.screeningQuestions.filter(q => String(q?.question || '').trim() !== '')
+          : [];
+
         const completeForm = {
           company: jobData.company || '',
           position: jobData.position || '',
@@ -292,11 +300,11 @@ const JobPost = () => {
           ppoPportunity: jobData.ppoPportunity || false,
           bondRequired: jobData.bondRequired || false,
           bondDetails: jobData.bondDetails || '',
-          rounds: Array.isArray(jobData.rounds) ? jobData.rounds : [{ name: '' }],
+          rounds: sanitizedRounds,
           roundsDescription: jobData.roundsDescription || '',
           skills: Array.isArray(jobData.skills) ? jobData.skills : [],
           newSkill: '',
-          screeningQuestions: Array.isArray(jobData.screeningQuestions) ? jobData.screeningQuestions : [{ question: '', type: 'text', options: [] }],
+          screeningQuestions: sanitizedQuestions,
           jobPolicy: jobData.jobPolicy || 'Global',
           whoCanApply: jobData.whoCanApply || 'Eligible',
           jobStatus: jobData.jobStatus || 'Open for Applications',
@@ -429,6 +437,35 @@ const JobPost = () => {
     setTouched(prev => ({ ...prev, [field]: true }));
   };
 
+  // Helpers for money fields: format with thousand separators for display, keep raw numeric string in state
+  const MONEY_FIELDS = new Set([
+    'ctc', 'minCtc', 'maxCtc',
+    'salary', 'minSalary', 'maxSalary',
+    'basePay', 'variablePay', 'bonuses'
+  ]);
+
+  const toPlainNumberString = (input) => {
+    if (input === null || input === undefined) return '';
+    const s = String(input).replace(/,/g, '').trim();
+    // Allow optional decimals; drop any non-digit except first dot
+    const cleaned = s.replace(/[^\d.]/g, '').replace(/(\..*)\./g, '$1');
+    return cleaned;
+  };
+
+  const toNumber = (input) => {
+    const s = toPlainNumberString(input);
+    if (s === '' || s === '.') return NaN;
+    return parseFloat(s);
+  };
+
+  const formatWithCommas = (input) => {
+    const s = toPlainNumberString(input);
+    if (!s) return '';
+    const [intPart, decPart] = s.split('.');
+    const withCommas = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    return decPart !== undefined ? `${withCommas}.${decPart}` : withCommas;
+  };
+
   const validateField = (field, value) => {
     let error = '';
     const requiredFields = [
@@ -463,29 +500,29 @@ const JobPost = () => {
         error = 'Start date must be after visit date';
       }
     }
-    if (field === 'ctc' && value && isNaN(parseFloat(value))) {
+    if (field === 'ctc' && value && isNaN(toNumber(value))) {
       error = 'CTC must be a valid number';
     }
-    if (field === 'salary' && value && isNaN(parseFloat(value))) {
+    if (field === 'salary' && value && isNaN(toNumber(value))) {
       error = 'Stipend must be a valid number';
     }
-    if (field === 'minCtc' && value && isNaN(parseFloat(value))) {
+    if (field === 'minCtc' && value && isNaN(toNumber(value))) {
       error = 'Minimum CTC must be a valid number';
     }
     if (field === 'maxCtc' && value) {
-      if (isNaN(parseFloat(value))) {
+      if (isNaN(toNumber(value))) {
         error = 'Maximum CTC must be a valid number';
-      } else if (jobForm.minCtc && parseFloat(value) < parseFloat(jobForm.minCtc)) {
+      } else if (jobForm.minCtc && toNumber(value) < toNumber(jobForm.minCtc)) {
         error = 'Maximum CTC must be greater than or equal to Minimum CTC';
       }
     }
-    if (field === 'minSalary' && value && isNaN(parseFloat(value))) {
+    if (field === 'minSalary' && value && isNaN(toNumber(value))) {
       error = 'Minimum Stipend must be a valid number';
     }
     if (field === 'maxSalary' && value) {
-      if (isNaN(parseFloat(value))) {
+      if (isNaN(toNumber(value))) {
         error = 'Maximum Stipend must be a valid number';
-      } else if (jobForm.minSalary && parseFloat(value) < parseFloat(jobForm.minSalary)) {
+      } else if (jobForm.minSalary && toNumber(value) < toNumber(jobForm.minSalary)) {
         error = 'Maximum Stipend must be greater than or equal to Minimum Stipend';
       }
     }
@@ -824,11 +861,11 @@ const JobPost = () => {
       ppoPportunity: false,
       bondRequired: false,
       bondDetails: '',
-      rounds: [{ name: 'Resume Screening' }],
+      rounds: [],
       roundsDescription: '',
       skills: [],
       newSkill: '',
-      screeningQuestions: [{ question: '', type: 'text', options: [] }],
+      screeningQuestions: [],
       jobPolicy: 'Global',
       whoCanApply: 'Eligible',
       jobStatus: 'Open for Applications',
@@ -983,15 +1020,22 @@ const JobPost = () => {
           />
         ) : (
           <input
-            type={type}
+            type={MONEY_FIELDS.has(field) ? 'text' : type}
             className={fieldClasses}
-            value={jobForm[field]}
-            onChange={e => setJobForm({...jobForm, [field]: type === 'number' ? parseFloat(e.target.value) : e.target.value})}
+            value={MONEY_FIELDS.has(field) ? formatWithCommas(jobForm[field]) : jobForm[field]}
+            onChange={e => {
+              if (MONEY_FIELDS.has(field)) {
+                const raw = toPlainNumberString(e.target.value);
+                setJobForm({ ...jobForm, [field]: raw });
+              } else {
+                setJobForm({ ...jobForm, [field]: type === 'number' ? parseFloat(e.target.value) : e.target.value });
+              }
+            }}
             onBlur={() => handleBlur(field)}
-            onWheel={type === 'number' ? (e) => e.target.blur() : undefined}
+            onWheel={type === 'number' && !MONEY_FIELDS.has(field) ? (e) => e.target.blur() : undefined}
             placeholder={placeholder}
-            min={type === 'number' ? "0" : undefined}
-            step={type === 'number' ? "0.01" : undefined}
+            min={type === 'number' && !MONEY_FIELDS.has(field) ? "0" : undefined}
+            step={type === 'number' && !MONEY_FIELDS.has(field) ? "0.01" : undefined}
           />
         )}
         {hasError && <p className="text-red-600 text-sm mt-1">{errors[field]}</p>}
@@ -1711,15 +1755,12 @@ const JobPost = () => {
                     <div id="field-ctc">
                       <label className="block text-sm font-medium text-gray-700 mb-1">Enter Amount (e.g., 400000)</label>
                       <input
-                        type="number"
-                        step="100"
-                        min="0"
+                        type="text"
                         className={`w-full p-3 border ${errors.ctc && touched.ctc ? 'border-red-500' : 'border-gray-300'} rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition`}
-                        onWheel={(e) => e.target.blur()}
-                        value={jobForm.ctc}
+                        value={formatWithCommas(jobForm.ctc)}
                         onChange={e => {
-                          const value = e.target.value;
-                          setJobForm({...jobForm, ctc: value});
+                          const raw = toPlainNumberString(e.target.value);
+                          setJobForm({ ...jobForm, ctc: raw });
                         }}
                         onBlur={() => handleBlur('ctc')}
                         placeholder="e.g., 400000"
@@ -1746,15 +1787,12 @@ const JobPost = () => {
                     <div id="field-minCtc">
                       <label className="block text-sm font-medium text-gray-700 mb-1">Min Amount (e.g., 300000)</label>
                       <input
-                        type="number"
-                        step="100"
-                        min="0"
+                        type="text"
                         className={`w-full p-3 border ${errors.minCtc && touched.minCtc ? 'border-red-500' : 'border-gray-300'} rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition`}
-                        onWheel={(e) => e.target.blur()}
-                        value={jobForm.minCtc}
+                        value={formatWithCommas(jobForm.minCtc)}
                         onChange={e => {
-                          const value = e.target.value;
-                          setJobForm({...jobForm, minCtc: value});
+                          const raw = toPlainNumberString(e.target.value);
+                          setJobForm({ ...jobForm, minCtc: raw });
                         }}
                         onBlur={() => handleBlur('minCtc')}
                         placeholder="e.g., 300000"
@@ -1764,15 +1802,12 @@ const JobPost = () => {
                     <div id="field-maxCtc">
                       <label className="block text-sm font-medium text-gray-700 mb-1">Max Amount (e.g., 500000)</label>
                       <input
-                        type="number"
-                        step="100"
-                        min="0"
+                        type="text"
                         className={`w-full p-3 border ${errors.maxCtc && touched.maxCtc ? 'border-red-500' : 'border-gray-300'} rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition`}
-                        onWheel={(e) => e.target.blur()}
-                        value={jobForm.maxCtc}
+                        value={formatWithCommas(jobForm.maxCtc)}
                         onChange={e => {
-                          const value = e.target.value;
-                          setJobForm({...jobForm, maxCtc: value});
+                          const raw = toPlainNumberString(e.target.value);
+                          setJobForm({ ...jobForm, maxCtc: raw });
                         }}
                         onBlur={() => handleBlur('maxCtc')}
                         placeholder="e.g., 500000"
@@ -1792,9 +1827,9 @@ const JobPost = () => {
                         ))}
                       </select>
                     </div>
-                    {jobForm.minCtc && jobForm.maxCtc && !isNaN(parseFloat(jobForm.minCtc)) && !isNaN(parseFloat(jobForm.maxCtc)) && (
+                    {jobForm.minCtc && jobForm.maxCtc && !isNaN(toNumber(jobForm.minCtc)) && !isNaN(toNumber(jobForm.maxCtc)) && (
                       <div className="col-span-full text-sm text-gray-600">
-                        Average: {((parseFloat(jobForm.minCtc) + parseFloat(jobForm.maxCtc)) / 2).toFixed(0)}
+                        Average: {formatWithCommas(((toNumber(jobForm.minCtc) + toNumber(jobForm.maxCtc)) / 2).toFixed(0))}
                       </div>
                     )}
                   </div>
@@ -1816,15 +1851,12 @@ const JobPost = () => {
                     <div id="field-salary">
                       <label className="block text-sm font-medium text-gray-700 mb-1">Enter Amount (e.g., 400000)</label>
                       <input
-                        type="number"
-                        step="100"
-                        min="0"
+                        type="text"
                         className={`w-full p-3 border ${errors.salary && touched.salary ? 'border-red-500' : 'border-gray-300'} rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition`}
-                        onWheel={(e) => e.target.blur()}
-                        value={jobForm.salary}
+                        value={formatWithCommas(jobForm.salary)}
                         onChange={e => {
-                          const value = e.target.value;
-                          setJobForm({...jobForm, salary: value});
+                          const raw = toPlainNumberString(e.target.value);
+                          setJobForm({ ...jobForm, salary: raw });
                         }}
                         onBlur={() => handleBlur('salary')}
                         placeholder="e.g., 400000"
@@ -1851,15 +1883,12 @@ const JobPost = () => {
                     <div id="field-minSalary">
                       <label className="block text-sm font-medium text-gray-700 mb-1">Min Amount (e.g., 300000)</label>
                       <input
-                        type="number"
-                        step="100"
-                        min="0"
+                        type="text"
                         className={`w-full p-3 border ${errors.minSalary && touched.minSalary ? 'border-red-500' : 'border-gray-300'} rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition`}
-                        onWheel={(e) => e.target.blur()}
-                        value={jobForm.minSalary}
+                        value={formatWithCommas(jobForm.minSalary)}
                         onChange={e => {
-                          const value = e.target.value;
-                          setJobForm({...jobForm, minSalary: value});
+                          const raw = toPlainNumberString(e.target.value);
+                          setJobForm({ ...jobForm, minSalary: raw });
                         }}
                         onBlur={() => handleBlur('minSalary')}
                         placeholder="e.g., 300000"
@@ -1869,15 +1898,12 @@ const JobPost = () => {
                     <div id="field-maxSalary">
                       <label className="block text-sm font-medium text-gray-700 mb-1">Max Amount (e.g., 500000)</label>
                       <input
-                        type="number"
-                        step="100"
-                        min="0"
+                        type="text"
                         className={`w-full p-3 border ${errors.maxSalary && touched.maxSalary ? 'border-red-500' : 'border-gray-300'} rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition`}
-                        onWheel={(e) => e.target.blur()}
-                        value={jobForm.maxSalary}
+                        value={formatWithCommas(jobForm.maxSalary)}
                         onChange={e => {
-                          const value = e.target.value;
-                          setJobForm({...jobForm, maxSalary: value});
+                          const raw = toPlainNumberString(e.target.value);
+                          setJobForm({ ...jobForm, maxSalary: raw });
                         }}
                         onBlur={() => handleBlur('maxSalary')}
                         placeholder="e.g., 500000"
@@ -1897,9 +1923,9 @@ const JobPost = () => {
                         ))}
                       </select>
                     </div>
-                    {jobForm.minSalary && jobForm.maxSalary && !isNaN(parseFloat(jobForm.minSalary)) && !isNaN(parseFloat(jobForm.maxSalary)) && (
+                    {jobForm.minSalary && jobForm.maxSalary && !isNaN(toNumber(jobForm.minSalary)) && !isNaN(toNumber(jobForm.maxSalary)) && (
                       <div className="col-span-full text-sm text-gray-600">
-                        Average: {((parseFloat(jobForm.minSalary) + parseFloat(jobForm.maxSalary)) / 2).toFixed(0)}
+                        Average: {formatWithCommas(((toNumber(jobForm.minSalary) + toNumber(jobForm.maxSalary)) / 2).toFixed(0))}
                       </div>
                     )}
                   </div>

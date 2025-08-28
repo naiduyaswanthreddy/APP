@@ -27,6 +27,7 @@ import RoundActionPanel from './RoundActionPanel';
 import { createStatusUpdateNotification, createInterviewNotification, createSystemAlertNotification, sendSelectionNotification } from '../../../utils/notificationHelpers';
 import { notifyApplicationStatusUpdate, notifyInterviewScheduled, notifyBulkStatusUpdate, notifyStudentSelection } from '../../../utils/adminNotificationHelpers';
 import { logJobActivity } from '../../../utils/activityLogger';
+import { formatINR } from '../../../utils/formatAmount';
 
 // Dev flag to gate debug logs
 const __DEV__ = process.env.NODE_ENV !== 'production';
@@ -1821,8 +1822,8 @@ const JobApplications = () => {
                       {(() => {
                         const hasRange = job?.minSalary && job?.maxSalary;
                         const unit = job?.salaryUnit || '';
-                        if (hasRange) return `${job.minSalary} - ${job.maxSalary} ${unit}`;
-                        if (job?.salary) return `${job.salary} ${unit}`.trim();
+                        if (hasRange) return `${formatINR(job.minSalary)} - ${formatINR(job.maxSalary)} ${unit}`.trim();
+                        if (job?.salary) return `${formatINR(job.salary)} ${unit}`.trim();
                         return 'N/A';
                       })()}
                     </div>
@@ -1846,8 +1847,8 @@ const JobApplications = () => {
                       {(() => {
                         const hasRange = job?.minCtc && job?.maxCtc;
                         const unit = job?.ctcUnit || '';
-                        if (hasRange) return `${job.minCtc} - ${job.maxCtc} ${unit}`;
-                        if (job?.ctc) return `${job.ctc} ${unit}`.trim();
+                        if (hasRange) return `${formatINR(job.minCtc)} - ${formatINR(job.maxCtc)} ${unit}`.trim();
+                        if (job?.ctc) return `${formatINR(job.ctc)} ${unit}`.trim();
                         return 'N/A';
                       })()}
                     </div>
@@ -2009,8 +2010,8 @@ const JobApplications = () => {
                             {(() => {
                               const hasRange = job?.minSalary && job?.maxSalary;
                               const unit = job?.salaryUnit || '';
-                              if (hasRange) return `${job.minSalary} - ${job.maxSalary} ${unit}`;
-                              if (job?.salary) return `${job.salary} ${unit}`.trim();
+                              if (hasRange) return `${formatINR(job.minSalary)} - ${formatINR(job.maxSalary)} ${unit}`.trim();
+                              if (job?.salary) return `${formatINR(job.salary)} ${unit}`.trim();
                               return 'N/A';
                             })()}
                           </span>
@@ -2021,8 +2022,8 @@ const JobApplications = () => {
                             {(() => {
                               const hasRange = job?.minCtc && job?.maxCtc;
                               const unit = job?.ctcUnit || '';
-                              if (hasRange) return `${job.minCtc} - ${job.maxCtc} ${unit}`;
-                              if (job?.ctc) return `${job.ctc} ${unit}`.trim();
+                              if (hasRange) return `${formatINR(job.minCtc)} - ${formatINR(job.maxCtc)} ${unit}`.trim();
+                              if (job?.ctc) return `${formatINR(job.ctc)} ${unit}`.trim();
                               return 'N/A';
                             })()}
                           </span>

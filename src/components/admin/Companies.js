@@ -17,6 +17,7 @@ import {
   ExternalLink
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import { formatINR } from '../../utils/formatAmount';
 
 const Companies = () => {
   const [companies, setCompanies] = useState([]);
@@ -330,9 +331,12 @@ const Companies = () => {
             <div>
               <p className="text-sm font-medium text-gray-600">Avg Package (LPA)</p>
               <p className="text-3xl font-bold text-purple-600">
-                {Object.values(companyStats).length > 0 ? 
-                  (Object.values(companyStats).reduce((sum, stats) => sum + (stats.averagePackage || 0), 0) / 
-                   Object.values(companyStats).filter(stats => stats.averagePackage > 0).length).toFixed(1) : '0'}
+                {Object.values(companyStats).length > 0 
+                  ? formatINR(
+                      Object.values(companyStats).reduce((sum, stats) => sum + (stats.averagePackage || 0), 0) /
+                      (Object.values(companyStats).filter(stats => stats.averagePackage > 0).length || 1)
+                    )
+                  : '₹ 0'}
               </p>
             </div>
             <DollarSign className="h-8 w-8 text-purple-600" />
@@ -463,15 +467,15 @@ const Companies = () => {
                     <p className="text-xs text-gray-600">Jobs Posted</p>
                   </div>
                   <div className="text-center">
-                    <p className="text-2xl font-bold text-purple-600">₹{stats.highestPackage?.toFixed(1) || '0'}</p>
+                    <p className="text-2xl font-bold text-purple-600">{formatINR(stats.highestPackage)}</p>
                     <p className="text-xs text-gray-600">Highest (LPA)</p>
                   </div>
                   <div className="text-center">
-                    <p className="text-2xl font-bold text-orange-600">₹{stats.lowestPackage?.toFixed(1) || '0'}</p>
+                    <p className="text-2xl font-bold text-orange-600">{formatINR(stats.lowestPackage)}</p>
                     <p className="text-xs text-gray-600">Lowest (LPA)</p>
                   </div>
                   <div className="text-center">
-                    <p className="text-2xl font-bold text-indigo-600">₹{stats.averagePackage?.toFixed(1) || '0'}</p>
+                    <p className="text-2xl font-bold text-indigo-600">{formatINR(stats.averagePackage)}</p>
                     <p className="text-xs text-gray-600">Average (LPA)</p>
                   </div>
                   <div className="text-center">
@@ -513,7 +517,7 @@ const Companies = () => {
                   </div>
                   <div className="flex justify-between">
                     <span className="text-sm text-gray-600">Avg Package:</span>
-                    <span className="text-sm font-semibold text-purple-600">₹{stats.averagePackage?.toFixed(1) || '0'} LPA</span>
+                    <span className="text-sm font-semibold text-purple-600">{formatINR(stats.averagePackage)} LPA</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-sm text-gray-600">Jobs Posted:</span>

@@ -33,6 +33,7 @@ import Loader from '../../loading'; // Add this import at the top
 import { ProfileSkeleton } from '../ui/SkeletonLoaders';
 import { ContentLoader, PageTransition } from '../ui/PageTransition';
 import { IndianRupee } from "lucide-react";
+import { formatAmount } from '../../utils/formatAmount';
 
 
 
@@ -951,9 +952,9 @@ case 'multiple-choice':
                                 <span>
                                   Stipend:{' '}
                                   {selectedJob.minSalary || selectedJob.maxSalary
-                                    ? `₹${selectedJob.minSalary || '—'} - ₹${selectedJob.maxSalary || '—'}/${selectedJob.salaryUnit?.toLowerCase() === 'monthly' ? 'month' : selectedJob.salaryUnit}`
+                                    ? `₹${formatAmount(selectedJob.minSalary) || '—'} - ₹${formatAmount(selectedJob.maxSalary) || '—'}/${selectedJob.salaryUnit?.toLowerCase() === 'monthly' ? 'month' : selectedJob.salaryUnit}`
                                     : selectedJob.salary
-                                    ? `₹${selectedJob.salary}/${selectedJob.salaryUnit?.toLowerCase() === 'monthly' ? 'month' : selectedJob.salaryUnit}`
+                                    ? `₹${formatAmount(selectedJob.salary)}/${selectedJob.salaryUnit?.toLowerCase() === 'monthly' ? 'month' : selectedJob.salaryUnit}`
                                     : 'Not specified'}
                                 </span>
                               </div>
@@ -966,9 +967,9 @@ case 'multiple-choice':
                                 <span>
                                   CTC:{' '}
                                   {selectedJob.minCtc || selectedJob.maxCtc
-                                    ? `₹${selectedJob.minCtc || '—'} - ₹${selectedJob.maxCtc || '—'}/${selectedJob.ctcUnit?.toLowerCase() === 'yearly' ? 'year' : selectedJob.ctcUnit}`
+                                    ? `₹${formatAmount(selectedJob.minCtc) || '—'} - ₹${formatAmount(selectedJob.maxCtc) || '—'}/${selectedJob.ctcUnit?.toLowerCase() === 'yearly' ? 'year' : selectedJob.ctcUnit}`
                                     : selectedJob.ctc
-                                    ? `₹${selectedJob.ctc}/${selectedJob.ctcUnit?.toLowerCase() === 'yearly' ? 'year' : selectedJob.ctcUnit}`
+                                    ? `₹${formatAmount(selectedJob.ctc)}/${selectedJob.ctcUnit?.toLowerCase() === 'yearly' ? 'year' : selectedJob.ctcUnit}`
                                     : 'Not specified'}
                                 </span>
                               </div>
@@ -1271,9 +1272,9 @@ case 'multiple-choice':
       label="Stipend"
       value={
         selectedJob.minSalary || selectedJob.maxSalary
-          ? `₹${selectedJob.minSalary || '—'} - ₹${selectedJob.maxSalary || '—'}/${selectedJob.salaryUnit?.toLowerCase() === 'monthly' ? 'month' : selectedJob.salaryUnit}`
+          ? `₹${formatAmount(selectedJob.minSalary) || '—'} - ₹${formatAmount(selectedJob.maxSalary) || '—'}/${selectedJob.salaryUnit?.toLowerCase() === 'monthly' ? 'month' : selectedJob.salaryUnit}`
           : (selectedJob.salary
-              ? `₹${selectedJob.salary}/${selectedJob.salaryUnit?.toLowerCase() === 'monthly' ? 'month' : selectedJob.salaryUnit}`
+              ? `₹${formatAmount(selectedJob.salary)}/${selectedJob.salaryUnit?.toLowerCase() === 'monthly' ? 'month' : selectedJob.salaryUnit}`
               : 'Not specified')
       }
     />
@@ -1288,9 +1289,9 @@ case 'multiple-choice':
       label="CTC"
       value={
         selectedJob.minCtc || selectedJob.maxCtc
-          ? `₹${selectedJob.minCtc || '—'} - ₹${selectedJob.maxCtc || '—'}/${selectedJob.ctcUnit?.toLowerCase() === 'yearly' ? 'year' : selectedJob.ctcUnit}`
+          ? `₹${formatAmount(selectedJob.minCtc) || '—'} - ₹${formatAmount(selectedJob.maxCtc) || '—'}/${selectedJob.ctcUnit?.toLowerCase() === 'yearly' ? 'year' : selectedJob.ctcUnit}`
           : (selectedJob.ctc
-              ? `₹${selectedJob.ctc}/${selectedJob.ctcUnit?.toLowerCase() === 'yearly' ? 'year' : selectedJob.ctcUnit}`
+              ? `₹${formatAmount(selectedJob.ctc)}/${selectedJob.ctcUnit?.toLowerCase() === 'yearly' ? 'year' : selectedJob.ctcUnit}`
               : 'Not specified')
       }
     />

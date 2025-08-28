@@ -79,6 +79,7 @@ function AuthHandler() {
         try {
           const token = await getIdTokenResult(user);
           const claimRole = token.claims.role || token.claims.userRole || localStorage.getItem('userRole');
+          const normalizedRole = claimRole === 'superadmin' ? 'admin' : claimRole;
           // Fetch and cache rollNumber for students
           try {
             const snap = await getDoc(doc(db, 'students', user.uid));
@@ -91,12 +92,12 @@ function AuthHandler() {
           } catch (_e) {
             // ignore
           }
-          if (claimRole) {
+          if (normalizedRole) {
             setUser(user);
-            setRole(claimRole);
+            setRole(normalizedRole);
             
             // Auto-subscribe to push notifications for students
-            if (claimRole === 'student') {
+            if (normalizedRole === 'student') {
               setTimeout(async () => {
                 try {
                   // Check if notifications are already granted
@@ -120,7 +121,7 @@ function AuthHandler() {
             }
             
             const currentPath = window.location.pathname;
-            const expectedPath = `/${claimRole}`;
+            const expectedPath = `/${normalizedRole}`;
             if (!currentPath.startsWith(expectedPath)) {
               navigate(expectedPath, { replace: true });
             }

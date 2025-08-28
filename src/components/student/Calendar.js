@@ -133,6 +133,13 @@ const StudentCalendar = () => {
     setShowEventModal(true);
   };
 
+  // Prefer agenda view on small screens for readability
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.innerWidth < 640) {
+      setView('agenda');
+    }
+  }, []);
+
   // Handle adding a new reminder
   const handleAddReminder = async () => {
     try {
@@ -263,13 +270,44 @@ const StudentCalendar = () => {
 
   return (
     <div className="container mx-auto px-0 sm:px-4 py-6">
+      {/* Mobile-specific style fixes for react-big-calendar */}
+      <style>{`
+        @media (max-width: 640px) {
+          .rbc-toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+          }
+          .rbc-toolbar .rbc-btn-group {
+            display: flex;
+            flex-wrap: nowrap;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+          }
+          .rbc-toolbar label {
+            white-space: nowrap;
+          }
+          .rbc-month-view, .rbc-time-view, .rbc-agenda-view {
+            font-size: 12px;
+          }
+          .rbc-header {
+            padding: 4px 2px;
+            font-size: 12px;
+          }
+          .rbc-event, .rbc-event-content, .rbc-agenda-event-cell {
+            font-size: 12px;
+            line-height: 1.1;
+          }
+        }
+      `}</style>
       <ToastContainer />
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-2xl font-bold text-gray-800">Placement Calendar</h1>
         <div className="flex space-x-2">
           <button
             onClick={() => setShowAddReminderModal(true)}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center"
+            className="px-3 py-2 rounded-full bg-blue-600 text-white hover:bg-blue-700 transition-colors flex items-center shadow-sm"
+            title="Add personal reminder"
           >
             <Bell size={16} className="mr-2" />
             Add Reminder
@@ -277,12 +315,14 @@ const StudentCalendar = () => {
           <div className="relative">
             <button
               onClick={() => document.getElementById('exportDropdown').classList.toggle('hidden')}
-              className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center"
+              className="px-3 py-2 rounded-full bg-white text-gray-800 border border-gray-300 hover:bg-gray-50 transition-colors flex items-center shadow-sm"
+              title="Export .ics"
             >
-              <CalendarIcon size={16} className="mr-2" />
-              Export Calendar
+              <CalendarIcon size={16} className="mr-2 text-gray-700" />
+              Export
+              <span className="ml-1">▾</span>
             </button>
-            <div id="exportDropdown" className="absolute right-0 mt-2 w-48 bg-white rounded-md shadow-lg py-1 z-10 hidden">
+            <div id="exportDropdown" className="absolute right-0 mt-2 w-44 bg-white rounded-md shadow-lg py-1 z-10 hidden">
               <button
                 onClick={() => exportToCalendar('Google Calendar')}
                 className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 w-full text-left"
@@ -293,7 +333,7 @@ const StudentCalendar = () => {
                 onClick={() => exportToCalendar('Outlook')}
                 className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 w-full text-left"
               >
-                Outlook Calendar
+                Outlook (.ics)
               </button>
             </div>
           </div>
@@ -302,71 +342,68 @@ const StudentCalendar = () => {
 
       {/* Filter options */}
       <div className="mb-6 flex flex-wrap gap-2">
-        <button
-          onClick={() => setFilter('all')}
-          className={`px-3 py-1 rounded-full text-sm ${filter === 'all' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-800'}`}
-        >
-          All Events
-        </button>
-        <button
-          onClick={() => setFilter('company-visit')}
-          className={`px-3 py-1 rounded-full text-sm ${filter === 'company-visit' ? 'bg-blue-600 text-white' : 'bg-blue-100 text-blue-800'}`}
-        >
-          Company Visits
-        </button>
-        <button
-          onClick={() => setFilter('pre-placement-talk')}
-          className={`px-3 py-1 rounded-full text-sm ${filter === 'pre-placement-talk' ? 'bg-purple-600 text-white' : 'bg-purple-100 text-purple-800'}`}
-        >
-          Pre-Placement Talks
-        </button>
-        <button
-          onClick={() => setFilter('deadline')}
-          className={`px-3 py-1 rounded-full text-sm ${filter === 'deadline' ? 'bg-orange-600 text-white' : 'bg-orange-100 text-orange-800'}`}
-        >
-          Deadlines
-        </button>
-        <button
-          onClick={() => setFilter('personal')}
-          className={`px-3 py-1 rounded-full text-sm ${filter === 'personal' ? 'bg-purple-600 text-white' : 'bg-purple-100 text-purple-800'}`}
-        >
-          Personal Reminders
-        </button>
+        {[
+          {key:'all', label:'All Events'},
+          {key:'company-visit', label:'Company Visits'},
+          {key:'pre-placement-talk', label:'Pre-Placement Talks'},
+          {key:'deadline', label:'Deadlines'},
+          {key:'personal', label:'Personal Reminders'},
+        ].map(f => {
+          let inactive = 'bg-gray-200 text-gray-800';
+          let active = 'bg-blue-600 text-white';
+          if (f.key === 'company-visit') {
+            inactive = 'bg-blue-100 text-blue-800';
+            active = 'bg-blue-600 text-white';
+          } else if (f.key === 'pre-placement-talk') {
+            inactive = 'bg-purple-100 text-purple-800';
+            active = 'bg-purple-600 text-white';
+          } else if (f.key === 'deadline') {
+            inactive = 'bg-orange-100 text-orange-800';
+            active = 'bg-orange-600 text-white';
+          } else if (f.key === 'personal') {
+            inactive = 'bg-purple-100 text-purple-800';
+            active = 'bg-purple-600 text-white';
+          }
+          return (
+            <button
+              key={f.key}
+              onClick={() => setFilter(f.key)}
+              className={`px-3 py-1 rounded-full text-sm ${filter === f.key ? active : inactive}`}
+            >
+              {f.label}
+            </button>
+          );
+        })}
       </div>
 
       {/* Calendar view */}
       <div className="bg-white rounded-xl shadow-lg p-6">
-        <div className="mb-4 flex justify-between items-center">
-          <div className="flex space-x-2">
-            <button
-              onClick={() => setView('month')}
-              className={`px-3 py-1 rounded-full text-sm ${view === 'month' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-800'}`}
-            >
-              Month
-            </button>
-            <button
-              onClick={() => setView('week')}
-              className={`px-3 py-1 rounded-full text-sm ${view === 'week' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-800'}`}
-            >
-              Week
-            </button>
-            <button
-              onClick={() => setView('day')}
-              className={`px-3 py-1 rounded-full text-sm ${view === 'day' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-800'}`}
-            >
-              Day
-            </button>
-            <button
-              onClick={() => setView('agenda')}
-              className={`px-3 py-1 rounded-full text-sm ${view === 'agenda' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-800'}`}
-            >
-              Agenda
-            </button>
+        <div className="mb-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="inline-flex rounded-lg border border-gray-300 bg-gray-50 p-1 shadow-sm">
+              {[
+                {k:'month', l:'Month'},
+                {k:'week', l:'Week'},
+                {k:'day', l:'Day'},
+                {k:'agenda', l:'Agenda'},
+              ].map(v => (
+                <button
+                  key={v.k}
+                  onClick={() => setView(v.k)}
+                  className={`px-3 py-1 text-sm rounded-md transition-colors ${
+                    view === v.k ? 'bg-white text-blue-600 shadow border border-gray-200' : 'text-gray-700 hover:bg-white'
+                  }`}
+                >
+                  {v.l}
+                </button>
+              ))}
+            </div>
           </div>
-          <div className="flex items-center space-x-2">
+          <div className="flex items-center gap-2">
             <button
               onClick={() => setDate(new Date())}
-              className="px-3 py-1 bg-gray-200 text-gray-800 rounded-md text-sm hover:bg-gray-300 transition-colors"
+              className="px-3 py-1 text-sm rounded-md border border-gray-300 bg-white hover:bg-gray-50"
+              title="Jump to today"
             >
               Today
             </button>
@@ -376,9 +413,10 @@ const StudentCalendar = () => {
                 newDate.setMonth(newDate.getMonth() - 1);
                 setDate(newDate);
               }}
-              className="p-1 rounded-full hover:bg-gray-200 transition-colors"
+              className="px-2 py-1 text-sm rounded-md border border-gray-300 bg-white hover:bg-gray-50"
+              title="Previous"
             >
-              &lt;
+              ‹
             </button>
             <button
               onClick={() => {
@@ -386,11 +424,12 @@ const StudentCalendar = () => {
                 newDate.setMonth(newDate.getMonth() + 1);
                 setDate(newDate);
               }}
-              className="p-1 rounded-full hover:bg-gray-200 transition-colors"
+              className="px-2 py-1 text-sm rounded-md border border-gray-300 bg-white hover:bg-gray-50"
+              title="Next"
             >
-              &gt;
+              ›
             </button>
-            <span className="text-lg font-medium">
+            <span className="ml-1 text-lg font-medium">
               {moment(date).format('MMMM YYYY')}
             </span>
           </div>
@@ -401,7 +440,7 @@ const StudentCalendar = () => {
             <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
           </div>
         ) : (
-          <div className="h-[60vh] sm:h-[600px]">
+          <div className="h-[70vh] sm:h-[600px]">
             <Calendar
               localizer={localizer}
               events={filteredEvents}
@@ -415,6 +454,7 @@ const StudentCalendar = () => {
               date={date}
               onNavigate={setDate}
               popup
+              toolbar={false}
             />
           </div>
         )}
